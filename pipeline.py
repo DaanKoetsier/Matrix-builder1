@@ -1628,7 +1628,8 @@ def optimize_globally_df(df):
     orig = df_s['_orig'].values
     n = len(df_s)
     dominated = set()
-
+    car = df_s['CARRIER_ID'].values
+    udt2 = df_s['USER_DEF_TYPE_2'].fillna('').astype(str).values
     # Postcode-partitioned dominance. A blank (country-wide) row can dominate
     # anything; a specific-postcode row can only be dominated by a blank row or
     # another row with the SAME postcode. Two different specific postcodes are
@@ -1645,9 +1646,12 @@ def optimize_globally_df(df):
             if skip_blank and pc_blank[i]:
                 continue
             ear = idxs[:a]                       # cheaper-or-equal candidates
+            # UPSGB: keep both single AND multi
+            if car[i] == 'UPSGB' and udt2[i] in ('single', 'multi'):
+                continue
             if ((w[ear] >= w[i]) & (p[ear] >= p[i]) & (e[ear] >= e[i])).any():
                 dominated.add(int(orig[i]))
-
+   
     _mark(blank_idx, skip_blank=False)           # blank rows: only blanks dominate
     groups = {}
     for j in range(n):
