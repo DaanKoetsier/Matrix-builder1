@@ -1181,7 +1181,6 @@ def optimize_matrix(df):
     df = df.reset_index(drop=True)
     if df.empty:
         return df
-    # str key so numeric / UK-alpha / blank postcodes share a group cleanly.
     pk = df['POSTCODE'].fillna('').astype(str).values
     car = df['CARRIER_ID'].values
     svc = df['SERVICE_LEVEL'].values
@@ -1189,6 +1188,7 @@ def optimize_matrix(df):
     p = df['MAX_PARCEL'].values.astype(float)
     e = df['EACH_WEIGHT'].values.astype(float)
     price = df['TOTAL_PRICE'].values.astype(float)
+    udt2 = df['USER_DEF_TYPE_2'].fillna('').astype(str).values
     groups = {}
     for idx in range(len(df)):
         groups.setdefault((car[idx], svc[idx], pk[idx]), []).append(idx)
@@ -1198,6 +1198,9 @@ def optimize_matrix(df):
         for a in range(1, len(idxs)):
             i = idxs[a]
             ear = np.asarray(idxs[:a])
+            # UPSGB: keep both single AND multi, don't delete based on price
+            if car[i] == 'UPSGB' and udt2[i] in ('single', 'multi'):
+                continue  # Skip deletion for UPSGB single/multi
             if ((w[ear] >= w[i]) & (p[ear] >= p[i]) & (e[ear] >= e[i])).any():
                 drop.add(i)
     keep = [i for i in range(len(df)) if i not in drop]
