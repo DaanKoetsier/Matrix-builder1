@@ -117,7 +117,7 @@ def _default_country_cfg(iso2):
         'iso2':                  iso2,
         'site_id':               'NLMOE01',
         'client_id':             'NLFENDER',
-        'max_parcel_count':      15,
+        'max_parcel_count':      20,
         'max_each_weight_kg':    31.5,
         'each_weight_grid':      sorted(set(list(range(1, 32)) + [31.5])),
         'carriers':              _SCANDI_CARRIERS if iso2 in _SCANDI_ISO else _BASE_CARRIERS,
