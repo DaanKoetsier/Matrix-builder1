@@ -374,7 +374,7 @@ def parse_master_rate_card(path):
     ws = sheet('PARCEL - EXPSAVER UPSDE 7R9W62')
     if ws:
         master['UPSDE']['expsaver_7r9w62'] = _flat_country_rates(ws)
-   ws = sheet('PARCEL - UPS - WEA')
+    ws = sheet('PARCEL - UPS - WEA')
     if ws:
         master['UPSWEA'] = _flat_country_rates(ws)
     ws = sheet('PARCEL - UPS DE - LINEHAUL', 'PARCEL - UPS - LINEHAUL')
