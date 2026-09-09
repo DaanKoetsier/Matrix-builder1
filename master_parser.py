@@ -353,7 +353,7 @@ def parse_master_rate_card(path):
     def sheet(*hints):
         return pl._find_sheet(wb, *hints)
 
-   master = {
+    master = {
     'UPSDE': {}, 'UPSNL': {}, 'DHL': {}, 'DPD': {},
     'POSTNORD': {}, 'MAUT': {}, 'UPSGB': {}, 
     'UPSWEA': {}, 'DHL-FREIGHT': {},
