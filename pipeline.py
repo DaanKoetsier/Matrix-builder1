@@ -1074,6 +1074,8 @@ def build_rows_upswea(rate_data, country_cfg):
                          'RATE_BASE': round(rate * mp, 4)})
     
     return rows
+
+
 def build_rows_dhl_freight(rate_data, country_cfg):
     """Build DHL-FREIGHT rows (CH, NO — weight-banded rates)."""
     rows = []
