@@ -353,10 +353,11 @@ def parse_master_rate_card(path):
     def sheet(*hints):
         return pl._find_sheet(wb, *hints)
 
-    master = {
-        'UPSDE': {}, 'UPSNL': {}, 'DHL': {}, 'DPD': {},
-        'POSTNORD': {}, 'MAUT': {}, 'UPSGB': {},
-    }
+   master = {
+    'UPSDE': {}, 'UPSNL': {}, 'DHL': {}, 'DPD': {},
+    'POSTNORD': {}, 'MAUT': {}, 'UPSGB': {}, 
+    'UPSWEA': {}, 'DHL-FREIGHT': {},
+}
 
     # ── UPSDE ────────────────────────────────────────────────────────────────
     ws = sheet('ZONES UPSDE')
@@ -373,9 +374,9 @@ def parse_master_rate_card(path):
     ws = sheet('PARCEL - EXPSAVER UPSDE 7R9W62')
     if ws:
         master['UPSDE']['expsaver_7r9w62'] = _flat_country_rates(ws)
-    ws = sheet('PARCEL - UPS - WEA')
+   ws = sheet('PARCEL - UPS - WEA')
     if ws:
-        master['UPSDE']['wea'] = _flat_country_rates(ws)
+        master['UPSWEA'] = _flat_country_rates(ws)
     ws = sheet('PARCEL - UPS DE - LINEHAUL', 'PARCEL - UPS - LINEHAUL')
     if ws:
         master['UPSDE']['linehaul'] = _parse_linehaul(ws)
@@ -395,7 +396,9 @@ def parse_master_rate_card(path):
     # ── DHL ──────────────────────────────────────────────────────────────────
     ws = sheet('PARCEL - DHL - Other countries')
     if ws:
-        master['DHL']['other'] = _parse_dhl_other(ws)
+        dhl_freight_data = _parse_dhl_other(ws)
+        master['DHL-FREIGHT'] = dhl_freight_data 
+    
     ws = sheet('PARCEL - DHL - BNL')
     if ws:
         master['DHL']['bnl'] = _parse_dhl_bnl(ws)
