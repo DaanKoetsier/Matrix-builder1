@@ -115,7 +115,7 @@ CARRIER_DEFAULTS = {
         'maut_variables_ref': None,
         'linehaul_per_parcel': 0.0,
     },
-
+}
 
 VARIABLES_LAYOUT = [
     ('FUEL UPSDE',    0.27),   # B1
