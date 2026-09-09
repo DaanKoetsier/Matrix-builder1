@@ -82,7 +82,7 @@ CARRIER_DEFAULTS = {
         'maut_variables_ref': None,
         'linehaul_per_parcel': 0.0,
     },
-    'UPSGB': {
+       'UPSGB': {
         'label': 'UPS GB',
         'services': ['STANDARD', 'EXPRESS SAVER'],
         'has_postcode': False,
@@ -93,7 +93,29 @@ CARRIER_DEFAULTS = {
         'maut_variables_ref': None,
         'linehaul_per_parcel': 3.9,
     },
-}
+    'UPSWEA': {
+        'label': 'UPSWEA',
+        'services': ['STANDARD'],
+        'has_postcode': False,
+        'volume_divisor': 167,
+        'fuel_pct': 0.27,
+        'fuel_variables_ref': 'B1',
+        'maut_pct': 0.0,
+        'maut_variables_ref': None,
+        'linehaul_per_parcel': 0.0,
+    },
+    'DHL-FREIGHT': {
+        'label': 'DHL Freight',
+        'services': ['PARCEL'],
+        'has_postcode': False,
+        'volume_divisor': 250,
+        'fuel_pct': 0.27,
+        'fuel_variables_ref': 'B2',
+        'maut_pct': 0.0,
+        'maut_variables_ref': None,
+        'linehaul_per_parcel': 0.0,
+    },
+
 
 VARIABLES_LAYOUT = [
     ('FUEL UPSDE',    0.27),   # B1
@@ -139,7 +161,8 @@ COUNTRY_CONFIG['DE']['carriers'] = ['UPDE', 'DPD', 'DHL-ROS']
 # GB — UK domestic via UPSGB, plus NL-origin export carriers that quote GB
 COUNTRY_CONFIG['GB'] = _default_country_cfg('GB')
 COUNTRY_CONFIG['GB']['carriers'] = ['UPSGB', 'UPDE', 'DPD', 'DHL-ROS', 'UPSNL']
-
+COUNTRY_CONFIG['CH']['carriers'] = ['UPSWEA', 'DHL-FREIGHT']
+COUNTRY_CONFIG['NO']['carriers'] = ['UPSWEA', 'DHL-FREIGHT']
 
 # ==============================================================================
 # 2. ROBUST TEXT / SHEET HELPERS
@@ -1032,14 +1055,70 @@ def build_rows_upsgb(rate_data, country_cfg):
     rows += build_combined_weight_rows(c0, bands, max_p, 'EXPRESS SAVER', max_ew=max_ew)
     return rows
 
-
+def build_rows_upswea(rate_data, country_cfg):
+    """Build UPSWEA rows (CH, NO — fixed rate per parcel)."""
+    rows = []
+    max_p = country_cfg['max_parcel_count']
+    c0 = _common(country_cfg['site_id'], country_cfg['client_id'],
+                 'UPSWEA', country_cfg['iso2'])
+    
+    # rate_data['UPSWEA'] = {'CH': 15.75, 'NO': 27.09}
+    rates = rate_data.get('UPSWEA', {})
+    country = country_cfg['iso2']
+    
+    if country in rates:
+        rate = rates[country]
+        for mp in range(1, max_p + 1):
+            rows.append({**c0, 'SERVICE_LEVEL': 'STANDARD', 'MAX_PARCEL': mp,
+                         'EACH_WEIGHT': 31.5,
+                         'RATE_BASE': round(rate * mp, 4)})
+    
+    return rows
+def build_rows_dhl_freight(rate_data, country_cfg):
+    """Build DHL-FREIGHT rows (CH, NO — weight-banded rates)."""
+    rows = []
+    max_p = country_cfg['max_parcel_count']
+    c0 = _common(country_cfg['site_id'], country_cfg['client_id'],
+                 'DHL-FREIGHT', country_cfg['iso2'])
+    
+    # rate_data['DHL-FREIGHT'] = {'CH': {'0-5': 21.48, '5-10': 26.23, ...}, 'NO': {...}}
+    dhl_freight = rate_data.get('DHL-FREIGHT', {})
+    country = country_cfg['iso2']
+    
+    if country not in dhl_freight:
+        return rows
+    
+    # Loop through weight bands
+    bands_dict = dhl_freight[country]  # e.g. {'0-5': 21.48, '5-10': 26.23, ...}
+    
+    for band_str in sorted(bands_dict.keys(), key=lambda x: float(x.split('-')[0])):
+        rate = bands_dict[band_str]
+        
+        # Parse band string "0-5" → max_weight = 5
+        parts = band_str.split('-')
+        if len(parts) == 2:
+            try:
+                max_weight = float(parts[1])
+                each_weight = max_weight
+                
+                for mp in range(1, max_p + 1):
+                    rows.append({**c0, 'SERVICE_LEVEL': 'PARCEL', 
+                                'MAX_PARCEL': mp,
+                                'EACH_WEIGHT': each_weight,
+                                'RATE_BASE': round(rate * mp, 4)})
+            except ValueError:
+                continue
+    
+    return rows
 CARRIER_BUILDERS = {
-    'UPDE':     build_rows_upde,
-    'DHL-ROS':  build_rows_dhl,
-    'DPD':      build_rows_dpd,
-    'UPSNL':    build_rows_upsnl,
-    'POSTNORD': build_rows_postnord,
-    'UPSGB':    build_rows_upsgb,
+    'UPDE':        build_rows_upde,
+    'DHL-ROS':     build_rows_dhl,
+    'DPD':         build_rows_dpd,
+    'UPSNL':       build_rows_upsnl,
+    'POSTNORD':    build_rows_postnord,
+    'UPSGB':       build_rows_upsgb,
+    'UPSWEA':      build_rows_upswea,
+    'DHL-FREIGHT': build_rows_dhl_freight,
 }
 
 
