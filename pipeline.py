@@ -1088,7 +1088,7 @@ def build_rows_upswea(rate_data, country_cfg):
     if country in rate_data:
         rate = rate_data[country]
         for mp in range(1, max_p + 1):
-            rows.append({**c0, 'SERVICE_LEVEL': 'STANDARD', 'MAX_PARCEL': mp,
+            rows.append({**c0, 'SERVICE_LEVEL': 'World Ship', 'MAX_PARCEL': mp,
                          'EACH_WEIGHT': 31.5,
                          'RATE_BASE': round(rate * mp, 4)})
     
