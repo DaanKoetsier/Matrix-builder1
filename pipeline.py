@@ -1272,9 +1272,8 @@ def optimize_matrix(df):
         for a in range(1, len(idxs)):
             i = idxs[a]
             ear = np.asarray(idxs[:a])
-            # UPSGB: keep both single AND multi, don't delete based on price
-            if car[i] == 'UPSGB' and udt2[i] in ('single', 'multi'):
-                continue  # Skip deletion for UPSGB single/multi
+            if (car[i] == 'UPSGB' and udt2[i] in ('single', 'multi')) or car[i] in ('UPSWEA', 'DHL-FREIGHT'):
+                continue
             if ((w[ear] >= w[i]) & (p[ear] >= p[i]) & (e[ear] >= e[i])).any():
                 drop.add(i)
     keep = [i for i in range(len(df)) if i not in drop]
@@ -1721,7 +1720,7 @@ def optimize_globally_df(df):
                 continue
             ear = idxs[:a]                       # cheaper-or-equal candidates
             # UPSGB: keep both single AND multi
-            if car[i] == 'UPSGB' and udt2[i] in ('single', 'multi'):
+            if (car[i] == 'UPSGB' and udt2[i] in ('single', 'multi')) or car[i] in ('UPSWEA', 'DHL-FREIGHT'):
                 continue
             if ((w[ear] >= w[i]) & (p[ear] >= p[i]) & (e[ear] >= e[i])).any():
                 dominated.add(int(orig[i]))
