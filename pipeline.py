@@ -2286,7 +2286,7 @@ def _align_columns(frames):
     frames = [f for f in frames if f is not None and not f.empty]
     if not frames:
         return pd.DataFrame()
-    has_pallet = any('FACTORED RATE PALLET' in f.columns for f in frames)
+    has_pallet = any('MOBILITY' in f.columns for f in frames)
     order = PALLET_COLUMN_ORDER if has_pallet else COLUMN_ORDER
     cols = list(order) + (['_is_bucket'] if any('_is_bucket' in f.columns for f in frames) else [])
     out = []
@@ -2307,7 +2307,7 @@ def write_matrix_numeric(df, output_path, country_cfg, variables_layout=None,
     from openpyxl.styles import PatternFill
     vl    = variables_layout or VARIABLES_LAYOUT
     order = column_order or (PALLET_COLUMN_ORDER
-                             if 'FACTORED RATE PALLET' in df.columns else COLUMN_ORDER)
+                             if 'MOBILITY' in df.columns else COLUMN_ORDER)
     wb = Workbook()
     ws = wb.active
     ws.title = f"{_iso3(country_cfg.get('iso2', 'ALL'))} Matrix"
@@ -2344,7 +2344,7 @@ def write_combined_matrix(frames, output_path, variables_layout=None,
     combined = _align_columns(frames)
     if combined.empty:
         raise ValueError("write_combined_matrix: no rows to write.")
-    has_pallet = 'FACTORED RATE PALLET' in combined.columns
+    has_pallet = 'MOBILITY' in combined.columns
     order = PALLET_COLUMN_ORDER if has_pallet else COLUMN_ORDER
     combined = combined.sort_values(['COUNTRYISO2', 'TOTAL_PRICE'],
                                     kind='stable').reset_index(drop=True)
