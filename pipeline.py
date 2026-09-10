@@ -161,8 +161,29 @@ COUNTRY_CONFIG['DE']['carriers'] = ['UPDE', 'DPD', 'DHL-ROS']
 # GB — UK domestic via UPSGB, plus NL-origin export carriers that quote GB
 COUNTRY_CONFIG['GB'] = _default_country_cfg('GB')
 COUNTRY_CONFIG['GB']['carriers'] = ['UPSGB', 'UPDE', 'DPD', 'DHL-ROS', 'UPSNL']
-COUNTRY_CONFIG['CH']['carriers'] = ['UPSWEA', 'DHL-FREIGHT']
-COUNTRY_CONFIG['NO']['carriers'] = ['UPSWEA', 'DHL-FREIGHT']
+COUNTRY_CONFIG['CH']['carriers'] = ['UPSWEA']
+COUNTRY_CONFIG['NO']['carriers'] = ['UPSWEA']
+
+# ISO 3166-1 alpha-2 -> alpha-3, applied only to the final written output
+# (COUNTRYISO2 column values / sheet titles). All internal logic — parsing,
+# COUNTRY_CONFIG lookups, the app's country selector — stays on alpha-2,
+# since that's what the source master workbook itself uses.
+ISO2_TO_ISO3 = {
+    'AT': 'AUT', 'BE': 'BEL', 'BG': 'BGR', 'CH': 'CHE', 'CZ': 'CZE',
+    'DE': 'DEU', 'DK': 'DNK', 'EE': 'EST', 'ES': 'ESP', 'FI': 'FIN',
+    'FR': 'FRA', 'GB': 'GBR', 'GR': 'GRC', 'HR': 'HRV', 'HU': 'HUN',
+    'IE': 'IRL', 'IT': 'ITA', 'LI': 'LIE', 'LT': 'LTU', 'LU': 'LUX',
+    'LV': 'LVA', 'MC': 'MCO', 'NL': 'NLD', 'NO': 'NOR', 'PL': 'POL',
+    'PT': 'PRT', 'RO': 'ROU', 'SE': 'SWE', 'SI': 'SVN', 'SK': 'SVK',
+    'SM': 'SMR',
+}
+
+
+def _iso3(code):
+    """Alpha-2 -> alpha-3 for final output; unknown codes pass through as-is."""
+    if code is None:
+        return code
+    return ISO2_TO_ISO3.get(str(code).strip().upper(), code)
 
 # ==============================================================================
 # 2. ROBUST TEXT / SHEET HELPERS
@@ -1220,9 +1241,12 @@ def write_matrix_excel(df, output_path, country_cfg,
     vl  = variables_layout or VARIABLES_LAYOUT
     wb  = Workbook()
     ws  = wb.active
-    ws.title = f"{country_cfg['iso2']} Matrix"
+    ws.title = f"{_iso3(country_cfg['iso2'])} Matrix"
     for ci, col in enumerate(COLUMN_ORDER, 1):
         ws.cell(1, ci, col)
+    df = df.copy()
+    if 'COUNTRYISO2' in df.columns:
+        df['COUNTRYISO2'] = df['COUNTRYISO2'].map(_iso3)
     df_sorted = df.sort_values('TOTAL_PRICE', kind='stable').reset_index(drop=True)
     bucket_fill = PatternFill('solid', fgColor='FFF2CC')   # soft amber = catch-all bucket
     for ri, row_dict in enumerate(df_sorted.to_dict('records'), start=2):
@@ -2272,9 +2296,12 @@ def write_matrix_numeric(df, output_path, country_cfg, variables_layout=None,
                              if 'FACTORED RATE PALLET' in df.columns else COLUMN_ORDER)
     wb = Workbook()
     ws = wb.active
-    ws.title = f"{country_cfg.get('iso2', 'ALL')} Matrix"
+    ws.title = f"{_iso3(country_cfg.get('iso2', 'ALL'))} Matrix"
     for ci, col in enumerate(order, 1):
         ws.cell(1, ci, col)
+    df = df.copy()
+    if 'COUNTRYISO2' in df.columns:
+        df['COUNTRYISO2'] = df['COUNTRYISO2'].map(_iso3)
     df_sorted = df.sort_values('TOTAL_PRICE', kind='stable').reset_index(drop=True)
     fill = PatternFill('solid', fgColor='FFF2CC')
     for ri, rec in enumerate(df_sorted.to_dict('records'), start=2):
@@ -2388,7 +2415,7 @@ def write_matrix_with_formulas(df, output_path, country_cfg,
     # write Variables sheet
     wb = Workbook()
     ws = wb.active
-    ws.title = f"{country_cfg.get('iso2', 'ALL')} Matrix"
+    ws.title = f"{_iso3(country_cfg.get('iso2', 'ALL'))} Matrix"
     for ci, col in enumerate(order, 1):
         ws.cell(1, ci, col)
 
@@ -2469,6 +2496,8 @@ def write_matrix_with_formulas(df, output_path, country_cfg,
                 cell = ws.cell(ri, ci, formulas[col])
             else:
                 v = rec.get(col)
+                if col == 'COUNTRYISO2':
+                    v = _iso3(v)
                 cell = ws.cell(ri, ci, None if (v is None or (isinstance(v, float) and pd.isna(v))) else v)
             if is_bucket:
                 cell.fill = fill
@@ -2485,7 +2514,7 @@ def write_matrix_with_formulas(df, output_path, country_cfg,
         for iso in pallet_countries:
             low, high, tier = mt.get(iso, (0.0, 0.0, 2500))
             r = maut_row[iso]
-            vs.cell(r, 1, f'MAUT DHL PALLET {iso}')
+            vs.cell(r, 1, f'MAUT DHL PALLET {_iso3(iso)}')
             vs.cell(r, 2, low)
             vs.cell(r, 3, high)
             vs.cell(r, 4, tier)
