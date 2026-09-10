@@ -800,8 +800,8 @@ def _common(site, client, carrier, iso2):
     return {'SITE_ID': site, 'CLIENT_ID': client, 'CARRIER_ID': carrier,
             'COUNTRYISO2': iso2, 'POSTCODE': None, 'MIN_WEIGHT': None,
             'MIN_VOLUME': None, 'MIN_PARCEL': None,
-            'USER_DEF_TYPE_2': None,
-            'USER_DEF_TYPE_4 (max 1,5m)': None, 'AWKWARD': None, 'RATE_EXTRA': 0}
+            'USER_DEF_TYPE_1': None, 'USER_DEF_TYPE_2': None,
+            'USER_DEF_TYPE_4': None, 'AWKWARD': None, 'RATE_EXTRA': 0}
 
 
 def build_combined_weight_rows(c0, bands, max_parcel, service_level,
@@ -1175,10 +1175,12 @@ def compute_numeric_totals(df, carrier_defaults=None):
 
 COLUMN_ORDER = [
     'SITE_ID', 'CLIENT_ID', 'CARRIER_ID', 'SERVICE_LEVEL', 'COUNTRYISO2',
-    'POSTCODE', 'MIN_WEIGHT', 'MAX_WEIGHT', 'MIN_VOLUME', 'MAX_VOLUME',
+    'POSTCODE',
+    'MIN_VOLUME', 'MAX_VOLUME', 'MIN_WEIGHT', 'MAX_WEIGHT',
     'MIN_PARCEL', 'MAX_PARCEL', 'EACH_WEIGHT', 'EACH_VOLUME',
-    'USER_DEF_TYPE_2',
-    'USER_DEF_TYPE_4 (max 1,5m)', 'AWKWARD', 'RATE_BASE', 'RATE_EXTRA',
+    'HAZMAT', 'AWKWARD',
+    'USER_DEF_TYPE_4', 'USER_DEF_TYPE_3', 'USER_DEF_TYPE_2', 'USER_DEF_TYPE_1',
+    'RATE_BASE', 'RATE_EXTRA',
     'FUEL', 'MAUT', 'Linehaul UPSDE', 'TOTAL_PRICE',
 ]
 COL_LETTER = {name: openpyxl.utils.get_column_letter(i + 1)
@@ -1396,7 +1398,7 @@ def optimize_globally(input_path, output_path):
 #
 # CargoWrite matches an order by scanning the matrix top-to-bottom (cheapest
 # first) and taking the first row whose constraints all fit. A constraint such
-# as USER_DEF_TYPE_4 (a max dimension) means "this row only matches parcels at
+# as USER_DEF_TYPE_1 (a max dimension) means "this row only matches parcels at
 # or under this size". Orders that exceed it must still match *something*, so
 # every constrained row needs a cheaper-to-build "bucket" twin lower down that
 # drops the limit, flags the row for oversight, and adds a surcharge.
@@ -1414,7 +1416,7 @@ def optimize_globally(input_path, output_path):
 #     'countries':      [],            # scope; [] = all countries
 #     'service_levels': [],            # scope; [] = all services
 #     'mode':           'stamp',       # (default)
-#     'constraint_col': 'USER_DEF_TYPE_4 (max 1,5m)',
+#     'constraint_col': 'USER_DEF_TYPE_1',
 #     'normal_value':   1.5,           # stamped on the cheap base rows
 #     'bucket_value':   None,          # value on the bucket twin (None = catch-all)
 #     'flag_col':       'AWKWARD',     # column flagged on the bucket twin
@@ -2111,10 +2113,12 @@ PALLET_MAUT.update({iso: (0.0, 0.0, 2500) for iso in
 # Extra columns pallet rows carry, in the reference file's order.
 PALLET_COLUMN_ORDER = [
     'SITE_ID', 'CLIENT_ID', 'CARRIER_ID', 'SERVICE_LEVEL', 'COUNTRYISO2',
-    'POSTCODE', 'MIN_WEIGHT', 'MAX_WEIGHT', 'MIN_VOLUME', 'MAX_VOLUME',
+    'POSTCODE',
+    'MIN_VOLUME', 'MAX_VOLUME', 'MIN_WEIGHT', 'MAX_WEIGHT',
     'MIN_PARCEL', 'MAX_PARCEL', 'EACH_WEIGHT', 'EACH_VOLUME',
-    'FACTORED RATE PALLET', 'USER_DEF_TYPE_1', 'USER_DEF_TYPE_2',
-    'USER_DEF_TYPE_4 (max 1,5m)', 'AWKWARD',
+    'HAZMAT', 'AWKWARD',
+    'USER_DEF_TYPE_4', 'USER_DEF_TYPE_3', 'USER_DEF_TYPE_2', 'USER_DEF_TYPE_1',
+    'FACTORED RATE PALLET',
     'RATE_BASE', 'RATE_EXTRA', 'MOBILITY', 'FUEL', 'MAUT', 'Linehaul UPSDE',
     'TOLL', 'ADMIN', 'TOTAL_PRICE',
 ]
@@ -2174,7 +2178,7 @@ def build_pallet_df(country, zip_rate_map, band_ceilings,
                 'EACH_WEIGHT': None, 'EACH_VOLUME': None,
                 'FACTORED RATE PALLET': rate_base,
                 'USER_DEF_TYPE_1': None, 'USER_DEF_TYPE_2': None,
-                'USER_DEF_TYPE_4 (max 1,5m)': None, 'AWKWARD': None,
+                'USER_DEF_TYPE_4': None, 'AWKWARD': None,
                 'RATE_BASE': rate_base, 'RATE_EXTRA': 0,
                 'MOBILITY': mob, 'FUEL': fuel, 'MAUT': maut,
                 'Linehaul UPSDE': None, 'TOLL': toll, 'ADMIN': admin,
