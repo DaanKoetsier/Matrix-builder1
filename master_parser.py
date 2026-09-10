@@ -495,7 +495,15 @@ def country_rate_data(master, iso2):
     # ── UPSGB (GB only) ──────────────────────────────────────────────────────────
     if iso2 == 'GB' and master.get('UPSGB'):
         parsed['UPSGB'] = dict(master['UPSGB'])
-
+    
+    # ── UPSWEA (CH, NO) ─────────────────────────────────────────────────────
+    if iso2 in master.get('UPSWEA', {}):
+        parsed['UPSWEA'] = master['UPSWEA']
+    
+    # ── DHL-FREIGHT (CH, NO) ────────────────────────────────────────────────
+    if iso2 in master.get('DHL-FREIGHT', {}):
+        parsed['DHL-FREIGHT'] = master['DHL-FREIGHT']
+    
     return parsed
 
 
