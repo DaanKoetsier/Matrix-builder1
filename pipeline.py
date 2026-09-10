@@ -1038,17 +1038,17 @@ def build_rows_upsgb(rate_data, country_cfg):
     c0     = _common(country_cfg['site_id'], country_cfg['client_id'],
                      'UPSGB', country_cfg['iso2'])
 
-    # STANDARD — combined weight: mp=1 priced on STDS (single), mp>=2 on STDM
-    # (multi, total-weight). One rate lookup per band, never rate * parcel_count.
+    # SINGLE — combined weight: mp=1 priced on STDS. STANDARD — mp>=2 priced on
+    # STDM (multi, total-weight). One rate lookup per band, never rate * parcel_count.
     bands_stds = collapse_same_rate_tiers(rate_data.get('STDS', []))
     rows += build_combined_weight_rows(
-        c0, bands_stds, max_parcel=1, service_level='STANDARD',
-        max_ew=max_ew, user_def_type_2='single')
+        c0, bands_stds, max_parcel=1, service_level='SINGLE',
+        max_ew=max_ew)
 
     bands_stdm = collapse_same_rate_tiers(rate_data.get('STDM', []))
     rows += build_combined_weight_rows(
         c0, bands_stdm, max_p, service_level='STANDARD',
-        max_ew=max_ew, user_def_type_2='multi', min_parcel=2)
+        max_ew=max_ew, min_parcel=2)
 
     # EXPS — express saver: billed on TOTAL shipment payweight (one lookup).
     bands = collapse_same_rate_tiers(rate_data.get('EXPS', []))
@@ -1754,8 +1754,22 @@ def optimize_globally_df(df):
 # e.g. '01','08','00'; Ireland uses named regions: DUBLIN, CORK, BT, …). Codes
 # stay as text so '01' never collapses to 1.
 
-def explode_parcel_postcodes(df, postcodes):
+# Codes that only ONE named carrier may serve for a given country — e.g. GB's
+# Northern Ireland / Channel Islands / Isle of Man outward codes ship via UPSNL
+# only. These codes are removed from every other carrier's exploded postcode
+# list and always added to the named carrier's, even if the pallet file's
+# postcode list for that country doesn't otherwise include them.
+COUNTRY_EXCLUSIVE_POSTCODES = {
+    'GB': {'BT': 'UPSNL', 'GY': 'UPSNL', 'IM': 'UPSNL', 'JE': 'UPSNL'},
+}
+
+
+def explode_parcel_postcodes(df, postcodes, exclusive=None):
     """Replicate each blank-POSTCODE parcel row once per postcode prefix.
+
+    `exclusive`: optional {postcode_code: carrier_id} — a code that must land
+    ONLY on that carrier's rows (added there even if missing from `postcodes`)
+    and is removed from every other carrier's postcode list.
 
     Returns (df_out, n_base) where n_base is the number of blank parcel rows that
     were exploded. If `postcodes` is empty but blank parcel rows exist, returns
@@ -1771,13 +1785,29 @@ def explode_parcel_postcodes(df, postcodes):
     target = is_parcel & blank
     if not target.any():
         return df, 0
-    if not codes:
+    if not codes and not exclusive:
         return df, -1
     keep = df[~target].copy()
     base = df[target].copy().reset_index(drop=True)
-    rep = base.loc[base.index.repeat(len(codes))].copy()
-    rep['POSTCODE'] = codes * len(base)
-    out = pd.concat([keep, rep], ignore_index=True)
+
+    if not exclusive:
+        rep = base.loc[base.index.repeat(len(codes))].copy()
+        rep['POSTCODE'] = codes * len(base)
+        out = pd.concat([keep, rep], ignore_index=True)
+        return out, len(base)
+
+    general_codes = [c for c in codes if c not in exclusive]
+    pieces = []
+    for carrier, grp in base.groupby('CARRIER_ID', sort=False):
+        own_codes = [c for c, car in exclusive.items() if car == carrier]
+        this_codes = general_codes + [c for c in own_codes if c not in general_codes]
+        if not this_codes:
+            continue
+        rep = grp.loc[grp.index.repeat(len(this_codes))].copy()
+        rep['POSTCODE'] = this_codes * len(grp)
+        pieces.append(rep)
+    exploded = pd.concat(pieces, ignore_index=True) if pieces else base.iloc[0:0]
+    out = pd.concat([keep, exploded], ignore_index=True)
     return out, len(base)
 
 
@@ -1966,7 +1996,9 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
 
     def _explode_min(frame):
         nonlocal pc_warn
-        exploded, n = explode_parcel_postcodes(frame, parcel_postcodes)
+        exploded, n = explode_parcel_postcodes(
+            frame, parcel_postcodes,
+            exclusive=COUNTRY_EXCLUSIVE_POSTCODES.get(country))
         if n == -1 and pc_warn is None:
             pc_warn = (f"⚠️ {country}: no postcode list available — parcel rows "
                        f"left blank, so CargoWrite will skip them. Add {country} "
@@ -2153,8 +2185,12 @@ def build_pallet_df(country, zip_rate_map, band_ceilings,
     service   = pd_def['service_level']
     maut_known = iso in mt
 
+    excl_codes = {c.upper() for c in COUNTRY_EXCLUSIVE_POSTCODES.get(iso, {})}
+
     rows = []
     for zkey in sorted(zip_rate_map, key=lambda z: (len(str(z)), str(z))):
+        if str(zkey).strip().upper() in excl_codes:
+            continue                      # parcel-only via the named carrier
         band_map = zip_rate_map[zkey]
         prev_ceiling = 0
         for ceil in band_ceilings:
