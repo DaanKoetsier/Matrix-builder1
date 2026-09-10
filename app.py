@@ -135,7 +135,7 @@ def file_bytes(p):
 
 
 DEFAULT_EXCEPTIONS = pd.DataFrame([
-    {'Enabled': True, 'Carrier': 'UPDE', 'Country (blank=all)': '',
+    {'Enabled': True, 'Carrier': 'UPSGB', 'Country (blank=all)': '',
      'Service level (blank=all)': 'STANDARD',
      'Size limit (m)': 1.5,  'Surcharge €/parcel': 6.0},
     {'Enabled': True, 'Carrier': 'DPD',  'Country (blank=all)': '',
@@ -169,7 +169,7 @@ def exception_rules_from_editor(edited_df):
             'carriers':       [carrier] if carrier and carrier != '(all)' else [],
             'countries':      [c.strip() for c in country.split(',') if c.strip()],
             'service_levels': [s.strip() for s in service.split(',') if s.strip()],
-            'constraint_col': 'USER_DEF_TYPE_4 (max 1,5m)',
+            'constraint_col': 'USER_DEF_TYPE_1',
             'normal_value':   limit,
             'bucket_value':   None,
             'flag_col':       'AWKWARD',
