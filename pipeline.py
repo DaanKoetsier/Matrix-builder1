@@ -1055,23 +1055,31 @@ def build_rows_upsgb(rate_data, country_cfg):
     rows += build_combined_weight_rows(c0, bands, max_p, 'EXPRESS SAVER', max_ew=max_ew)
     return rows
 
-def build_rows_upswea(rate_data, country_cfg):
-    """Build UPSWEA rows (CH, NO — fixed rate per parcel)."""
+def build_rows_dhl_freight(rate_data, country_cfg):
+    """Build DHL-FREIGHT rows (CH, NO — weight-banded rates)."""
     rows = []
     max_p = country_cfg['max_parcel_count']
     c0 = _common(country_cfg['site_id'], country_cfg['client_id'],
-                 'UPSWEA', country_cfg['iso2'])
+                 'DHL-FREIGHT', country_cfg['iso2'])
     
-    # rate_data['UPSWEA'] = {'CH': 15.75, 'NO': 27.09}
-    rates = rate_data.get('UPSWEA', {})
+    dhl_freight_dict = rate_data.get('DHL-FREIGHT', {})
     country = country_cfg['iso2']
     
-    if country in rates:
-        rate = rates[country]
+    if country not in dhl_freight_dict:
+        return rows
+    
+    # dhl_freight_dict[country] is a LIST of {'from': x, 'to': y, 'rate': z, 'per_kg': ...}
+    bands_list = dhl_freight_dict[country]
+    
+    for band in bands_list:
+        rate = band.get('rate', 0)
+        to_weight = band.get('to', 0)
+        
         for mp in range(1, max_p + 1):
-            rows.append({**c0, 'SERVICE_LEVEL': 'STANDARD', 'MAX_PARCEL': mp,
-                         'EACH_WEIGHT': 31.5,
-                         'RATE_BASE': round(rate * mp, 4)})
+            rows.append({**c0, 'SERVICE_LEVEL': 'PARCEL', 
+                        'MAX_PARCEL': mp,
+                        'EACH_WEIGHT': to_weight,
+                        'RATE_BASE': round(rate * mp, 4)})
     
     return rows
 
