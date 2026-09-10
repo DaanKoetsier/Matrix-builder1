@@ -2185,8 +2185,12 @@ def build_pallet_df(country, zip_rate_map, band_ceilings,
     service   = pd_def['service_level']
     maut_known = iso in mt
 
+    excl_codes = {c.upper() for c in COUNTRY_EXCLUSIVE_POSTCODES.get(iso, {})}
+
     rows = []
     for zkey in sorted(zip_rate_map, key=lambda z: (len(str(z)), str(z))):
+        if str(zkey).strip().upper() in excl_codes:
+            continue                      # parcel-only via the named carrier
         band_map = zip_rate_map[zkey]
         prev_ceiling = 0
         for ceil in band_ceilings:
