@@ -1055,6 +1055,26 @@ def build_rows_upsgb(rate_data, country_cfg):
     rows += build_combined_weight_rows(c0, bands, max_p, 'EXPRESS SAVER', max_ew=max_ew)
     return rows
 
+def build_rows_upswea(rate_data, country_cfg):
+    """Build UPSWEA rows (CH, NO — fixed rate per parcel)."""
+    rows = []
+    max_p = country_cfg['max_parcel_count']
+    c0 = _common(country_cfg['site_id'], country_cfg['client_id'],
+                 'UPSWEA', country_cfg['iso2'])
+    
+    rates = rate_data.get('UPSWEA', {})
+    country = country_cfg['iso2']
+    
+    if country in rates:
+        rate = rates[country]
+        for mp in range(1, max_p + 1):
+            rows.append({**c0, 'SERVICE_LEVEL': 'STANDARD', 'MAX_PARCEL': mp,
+                         'EACH_WEIGHT': 31.5,
+                         'RATE_BASE': round(rate * mp, 4)})
+    
+    return rows
+
+
 def build_rows_dhl_freight(rate_data, country_cfg):
     """Build DHL-FREIGHT rows (CH, NO — weight-banded rates)."""
     rows = []
@@ -1084,42 +1104,7 @@ def build_rows_dhl_freight(rate_data, country_cfg):
     return rows
 
 
-def build_rows_dhl_freight(rate_data, country_cfg):
-    """Build DHL-FREIGHT rows (CH, NO — weight-banded rates)."""
-    rows = []
-    max_p = country_cfg['max_parcel_count']
-    c0 = _common(country_cfg['site_id'], country_cfg['client_id'],
-                 'DHL-FREIGHT', country_cfg['iso2'])
-    
-    # rate_data['DHL-FREIGHT'] = {'CH': {'0-5': 21.48, '5-10': 26.23, ...}, 'NO': {...}}
-    dhl_freight = rate_data.get('DHL-FREIGHT', {})
-    country = country_cfg['iso2']
-    
-    if country not in dhl_freight:
-        return rows
-    
-    # Loop through weight bands
-    bands_dict = dhl_freight[country]  # e.g. {'0-5': 21.48, '5-10': 26.23, ...}
-    
-    for band_str in sorted(bands_dict.keys(), key=lambda x: float(x.split('-')[0])):
-        rate = bands_dict[band_str]
-        
-        # Parse band string "0-5" → max_weight = 5
-        parts = band_str.split('-')
-        if len(parts) == 2:
-            try:
-                max_weight = float(parts[1])
-                each_weight = max_weight
-                
-                for mp in range(1, max_p + 1):
-                    rows.append({**c0, 'SERVICE_LEVEL': 'PARCEL', 
-                                'MAX_PARCEL': mp,
-                                'EACH_WEIGHT': each_weight,
-                                'RATE_BASE': round(rate * mp, 4)})
-            except ValueError:
-                continue
-    
-    return rows
+
 CARRIER_BUILDERS = {
     'UPDE':        build_rows_upde,
     'DHL-ROS':     build_rows_dhl,
