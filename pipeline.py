@@ -2059,11 +2059,11 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
             min_all = append_euroconnect_buckets(min_all)
         min_all = _explode_min(min_all)
         write_matrix_with_formulas(ext_all, ext_path, cfg, cd, vl, pallet_maut,
-                                   pallet_defaults)
+                                   pallet_defaults, pallet_overrides=pallet_overrides)
         write_matrix_with_formulas(opt_all, opt_path, cfg, cd, vl, pallet_maut,
-                                   pallet_defaults)
+                                   pallet_defaults, pallet_overrides=pallet_overrides)
         write_matrix_with_formulas(min_all, min_path, cfg, cd, vl, pallet_maut,
-                                   pallet_defaults)
+                                   pallet_defaults, pallet_overrides=pallet_overrides)
         rows_ext, rows_opt, rows_min = len(ext_all), len(opt_all), len(min_all)
         extended_frame, optimized_frame, minimal_frame = ext_all, opt_all, min_all
     elif any_buckets:
@@ -2336,7 +2336,8 @@ def write_matrix_numeric(df, output_path, country_cfg, variables_layout=None,
 
 def write_combined_matrix(frames, output_path, variables_layout=None,
                           pallet_maut=None, pallet_defaults=None,
-                          carrier_defaults=None, formulas=True):
+                          carrier_defaults=None, formulas=True,
+                          pallet_overrides=None):
     """Merge every country's minimal frame into ONE sheet, sorted by country then
     price. With formulas=True (default) the sheet uses live Variables formulas;
     per-country pallet MAUT cells are written into the Variables sheet. `frames`
@@ -2351,7 +2352,8 @@ def write_combined_matrix(frames, output_path, variables_layout=None,
     if formulas and has_pallet:
         write_matrix_with_formulas(combined, output_path, {'iso2': 'ALL'},
                                    carrier_defaults, variables_layout,
-                                   pallet_maut, pallet_defaults, column_order=order)
+                                   pallet_maut, pallet_defaults, column_order=order,
+                                   pallet_overrides=pallet_overrides)
     else:
         write_matrix_numeric(combined, output_path, {'iso2': 'ALL'},
                              variables_layout, column_order=order)
@@ -2394,7 +2396,7 @@ def _ensure_var(vars_rows, name, default):
 def write_matrix_with_formulas(df, output_path, country_cfg,
                                carrier_defaults=None, variables_layout=None,
                                pallet_maut=None, pallet_defaults=None,
-                               column_order=None):
+                               column_order=None, pallet_overrides=None):
     """Write a pallet-inclusive matrix with live formulas referencing Variables."""
     from openpyxl import Workbook
     from openpyxl.styles import PatternFill
@@ -2405,11 +2407,19 @@ def write_matrix_with_formulas(df, output_path, country_cfg,
     order = column_order or PALLET_COLUMN_ORDER
     L     = _letter_map(order)
 
+    # TOLL UK PALLET is a single Variables cell shared by every pallet row in
+    # the sheet (GB is the only country with a nonzero toll in this contract).
+    # It must reflect GB's per-country override, not the generic 0% default —
+    # otherwise the formula recomputes to 0 for GB as soon as Excel opens it,
+    # even though the numeric value baked in at build time was correct.
+    ov_table  = pallet_overrides or PALLET_COUNTRY_OVERRIDES
+    toll_pct  = ov_table.get('GB', {}).get('toll_pct', pdef.get('toll_pct', 0.0043))
+
     vars_rows = list(variables_layout or VARIABLES_LAYOUT)
     # Ensure the pallet global cells exist and capture their Variables rows.
     vars_rows, r_fuel  = _ensure_var(vars_rows, 'FUEL DHL PALLET', pdef['fuel_pct'])
     vars_rows, r_mob   = _ensure_var(vars_rows, 'MOBILITY PALLET', pdef['mobility_pct'])
-    vars_rows, r_toll  = _ensure_var(vars_rows, 'TOLL UK PALLET', pdef.get('toll_pct', 0.0043))
+    vars_rows, r_toll  = _ensure_var(vars_rows, 'TOLL UK PALLET', toll_pct)
     vars_rows, r_admin = _ensure_var(vars_rows, 'ADMIN PALLET', pdef['admin_per_shipment'])
 
     # Per-country pallet MAUT block: name | low(B) | high(C) | tier(D)
