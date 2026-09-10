@@ -135,7 +135,7 @@ def file_bytes(p):
 
 
 DEFAULT_EXCEPTIONS = pd.DataFrame([
-    {'Enabled': True, 'Carrier': 'UPDE', 'Country (blank=all)': '',
+    {'Enabled': True, 'Carrier': 'UPSGB', 'Country (blank=all)': '',
      'Service level (blank=all)': 'STANDARD',
      'Size limit (m)': 1.5,  'Surcharge €/parcel': 6.0},
     {'Enabled': True, 'Carrier': 'DPD',  'Country (blank=all)': '',
