@@ -160,7 +160,7 @@ COUNTRY_CONFIG['DE']['carriers'] = ['UPDE', 'DPD', 'DHL-ROS']
 
 # GB — UK domestic via UPSGB, plus NL-origin export carriers that quote GB
 COUNTRY_CONFIG['GB'] = _default_country_cfg('GB')
-COUNTRY_CONFIG['GB']['carriers'] = ['UPSGB', 'UPDE', 'DPD', 'DHL-ROS', 'UPSNL']
+COUNTRY_CONFIG['GB']['carriers'] = ['UPSGB', 'UPSNL']
 COUNTRY_CONFIG['CH']['carriers'] = ['UPSWEA']
 COUNTRY_CONFIG['NO']['carriers'] = ['UPSWEA']
 
@@ -1787,13 +1787,23 @@ COUNTRY_EXCLUSIVE_POSTCODES = {
     'GB': {'BT': 'UPSNL', 'GY': 'UPSNL', 'IM': 'UPSNL', 'JE': 'UPSNL'},
 }
 
+# Carriers that must NOT get the country's general postcode list at all — only
+# their exclusive codes above. e.g. GB's UPSNL now serves only the islands
+# (BT/GY/IM/JE); UPSGB covers the rest of the country on its own.
+COUNTRY_ISLAND_ONLY_CARRIERS = {
+    'GB': {'UPSNL'},
+}
 
-def explode_parcel_postcodes(df, postcodes, exclusive=None):
+
+def explode_parcel_postcodes(df, postcodes, exclusive=None, restrict_carriers=None):
     """Replicate each blank-POSTCODE parcel row once per postcode prefix.
 
     `exclusive`: optional {postcode_code: carrier_id} — a code that must land
     ONLY on that carrier's rows (added there even if missing from `postcodes`)
     and is removed from every other carrier's postcode list.
+
+    `restrict_carriers`: optional set of carrier_ids that get ONLY their
+    `exclusive` codes, never the general `postcodes` list.
 
     Returns (df_out, n_base) where n_base is the number of blank parcel rows that
     were exploded. If `postcodes` is empty but blank parcel rows exist, returns
@@ -1821,10 +1831,14 @@ def explode_parcel_postcodes(df, postcodes, exclusive=None):
         return out, len(base)
 
     general_codes = [c for c in codes if c not in exclusive]
+    restrict_carriers = restrict_carriers or set()
     pieces = []
     for carrier, grp in base.groupby('CARRIER_ID', sort=False):
         own_codes = [c for c, car in exclusive.items() if car == carrier]
-        this_codes = general_codes + [c for c in own_codes if c not in general_codes]
+        if carrier in restrict_carriers:
+            this_codes = own_codes
+        else:
+            this_codes = general_codes + [c for c in own_codes if c not in general_codes]
         if not this_codes:
             continue
         rep = grp.loc[grp.index.repeat(len(this_codes))].copy()
@@ -2022,7 +2036,8 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
         nonlocal pc_warn
         exploded, n = explode_parcel_postcodes(
             frame, parcel_postcodes,
-            exclusive=COUNTRY_EXCLUSIVE_POSTCODES.get(country))
+            exclusive=COUNTRY_EXCLUSIVE_POSTCODES.get(country),
+            restrict_carriers=COUNTRY_ISLAND_ONLY_CARRIERS.get(country))
         if n == -1 and pc_warn is None:
             pc_warn = (f"⚠️ {country}: no postcode list available — parcel rows "
                        f"left blank, so CargoWrite will skip them. Add {country} "
