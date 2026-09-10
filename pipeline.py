@@ -98,8 +98,8 @@ CARRIER_DEFAULTS = {
         'services': ['STANDARD'],
         'has_postcode': False,
         'volume_divisor': 167,
-        'fuel_pct': 0.27,
-        'fuel_variables_ref': 'B1',
+        'fuel_pct': 0.0,
+        'fuel_variables_ref': None,
         'maut_pct': 0.0,
         'maut_variables_ref': None,
         'linehaul_per_parcel': 0.0,
@@ -1062,11 +1062,10 @@ def build_rows_upswea(rate_data, country_cfg):
     c0 = _common(country_cfg['site_id'], country_cfg['client_id'],
                  'UPSWEA', country_cfg['iso2'])
     
-    rates = rate_data.get('UPSWEA', {})
     country = country_cfg['iso2']
-    
-    if country in rates:
-        rate = rates[country]
+
+    if country in rate_data:
+        rate = rate_data[country]
         for mp in range(1, max_p + 1):
             rows.append({**c0, 'SERVICE_LEVEL': 'STANDARD', 'MAX_PARCEL': mp,
                          'EACH_WEIGHT': 31.5,
@@ -1082,14 +1081,13 @@ def build_rows_dhl_freight(rate_data, country_cfg):
     c0 = _common(country_cfg['site_id'], country_cfg['client_id'],
                  'DHL-FREIGHT', country_cfg['iso2'])
     
-    dhl_freight_dict = rate_data.get('DHL-FREIGHT', {})
     country = country_cfg['iso2']
-    
-    if country not in dhl_freight_dict:
+
+    if country not in rate_data:
         return rows
-    
-    # dhl_freight_dict[country] is a LIST of {'from': x, 'to': y, 'rate': z, 'per_kg': ...}
-    bands_list = dhl_freight_dict[country]
+
+    # rate_data[country] is a LIST of {'from': x, 'to': y, 'rate': z, 'per_kg': ...}
+    bands_list = rate_data[country]
     
     for band in bands_list:
         rate = band.get('rate', 0)
