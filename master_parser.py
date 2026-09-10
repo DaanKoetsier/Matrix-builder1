@@ -522,6 +522,8 @@ def available_countries(master):
     countries |= set(master.get('DHL', {}).get('bnl', {}))
     countries |= set(master.get('DPD', {}))
     countries |= set(master.get('POSTNORD', {}))
+    countries |= set(master.get('UPSWEA', {}))
+    countries |= set(master.get('DHL-FREIGHT', {}))
     if master.get('UPSGB'):
         countries.add('GB')
     return countries
