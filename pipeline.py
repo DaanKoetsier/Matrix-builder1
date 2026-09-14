@@ -2321,11 +2321,30 @@ def write_matrix_numeric(df, output_path, country_cfg, variables_layout=None,
         df['RATE_BASE2.0'] = df['RATE_BASE']
     df_sorted = df.sort_values('TOTAL_PRICE', kind='stable').reset_index(drop=True)
     fill = PatternFill('solid', fgColor='FFF2CC')
+
+    # TOTAL_PRICE is the one live formula in this otherwise-numeric sheet: a
+    # plain in-row SUM over RATE_BASE2.0 through the last surcharge column, so
+    # editing any of those cells by hand recalculates it. Everything else
+    # (including RATE_BASE2.0 itself) stays a literal value.
+    L = _letter_map(order)
+    sum_start = sum_end = None
+    if 'RATE_BASE2.0' in order and 'TOTAL_PRICE' in order:
+        tp_idx = order.index('TOTAL_PRICE')
+        if tp_idx > 0:
+            sum_start = L['RATE_BASE2.0']
+            sum_end   = L[order[tp_idx - 1]]
+
     for ri, rec in enumerate(df_sorted.to_dict('records'), start=2):
         is_bucket = bool(rec.get('_is_bucket'))
+        # A sentinel catch-all bucket (no rate components) keeps its literal
+        # TOTAL_PRICE; a SUM formula over blank cells would collapse it to 0.
+        sentinel = is_bucket and pd.isna(rec.get('RATE_BASE'))
         for ci, col in enumerate(order, 1):
-            v = rec.get(col)
-            cell = ws.cell(ri, ci, None if (v is None or (isinstance(v, float) and pd.isna(v))) else v)
+            if col == 'TOTAL_PRICE' and sum_start and not sentinel:
+                cell = ws.cell(ri, ci, f"=SUM({sum_start}{ri}:{sum_end}{ri})")
+            else:
+                v = rec.get(col)
+                cell = ws.cell(ri, ci, None if (v is None or (isinstance(v, float) and pd.isna(v))) else v)
             if is_bucket:
                 cell.fill = fill
     vs = wb.create_sheet('Variables')
