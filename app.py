@@ -73,7 +73,7 @@ def variables_layout(fuel_vals, maut_dhl, maut_dpd, pallet_vals=None):
         ('MOBILITY PALLET', pv.get('mobility', 0.04)),        # B12
         ('TOLL UK PALLET',  pv.get('toll',     0.0043)),      # B13
         ('ADMIN PALLET',    pv.get('admin',    46.51)),       # B14
-        ('FACTOR DHL',      pv.get('factor',   4.13)),         # B15
+        ('FACTOR DHL',      pv.get('factor',   1.0)),          # B15
     ]
 
 
