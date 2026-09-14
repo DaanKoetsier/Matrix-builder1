@@ -1201,7 +1201,7 @@ COLUMN_ORDER = [
     'MIN_PARCEL', 'MAX_PARCEL', 'EACH_WEIGHT', 'EACH_VOLUME',
     'HAZMAT', 'AWKWARD',
     'USER_DEF_TYPE_4', 'USER_DEF_TYPE_3', 'USER_DEF_TYPE_2', 'USER_DEF_TYPE_1',
-    'RATE_BASE', 'RATE_EXTRA',
+    'RATE_BASE', 'RATE_BASE2.0', 'RATE_EXTRA',
     'FUEL', 'MAUT', 'Linehaul UPSDE', 'TOTAL_PRICE',
 ]
 COL_LETTER = {name: openpyxl.utils.get_column_letter(i + 1)
@@ -1213,6 +1213,7 @@ def _build_formulas_for_row(row_dict, excel_row, carrier_defaults=None):
     L   = COL_LETTER
     cfg = cd[row_dict['CARRIER_ID']]
     f   = {}
+    f['RATE_BASE2.0'] = f"={L['RATE_BASE']}{excel_row}"
     # Overflow buckets leave MAX_PARCEL / EACH_WEIGHT blank — skip the grid
     # formulas for them so we don't emit "=*" ; their values stay literal (None).
     has_grid = (row_dict.get('MAX_PARCEL') is not None
@@ -2189,8 +2190,8 @@ PALLET_COLUMN_ORDER = [
     'MIN_PARCEL', 'MAX_PARCEL', 'EACH_WEIGHT', 'EACH_VOLUME',
     'HAZMAT', 'AWKWARD',
     'USER_DEF_TYPE_4', 'USER_DEF_TYPE_3', 'USER_DEF_TYPE_2', 'USER_DEF_TYPE_1',
-    'RATE_BASE', 'RATE_EXTRA', 'MOBILITY', 'FUEL', 'MAUT', 'Linehaul UPSDE',
-    'TOLL', 'ADMIN', 'TOTAL_PRICE',
+    'RATE_BASE', 'RATE_BASE2.0', 'RATE_EXTRA', 'MOBILITY', 'FUEL', 'MAUT',
+    'Linehaul UPSDE', 'TOLL', 'ADMIN', 'TOTAL_PRICE',
 ]
 
 
@@ -2316,6 +2317,8 @@ def write_matrix_numeric(df, output_path, country_cfg, variables_layout=None,
     df = df.copy()
     if 'COUNTRYISO2' in df.columns:
         df['COUNTRYISO2'] = df['COUNTRYISO2'].map(_iso3)
+    if 'RATE_BASE' in df.columns:
+        df['RATE_BASE2.0'] = df['RATE_BASE']
     df_sorted = df.sort_values('TOTAL_PRICE', kind='stable').reset_index(drop=True)
     fill = PatternFill('solid', fgColor='FFF2CC')
     for ri, rec in enumerate(df_sorted.to_dict('records'), start=2):
@@ -2467,6 +2470,11 @@ def write_matrix_with_formulas(df, output_path, country_cfg,
         # Sentinel catch-all bucket (no rate components): keep its literal price.
         sentinel = is_bucket and pd.isna(rec.get('RATE_BASE'))
         formulas = {}
+
+        if sentinel:
+            pass
+        else:
+            formulas['RATE_BASE2.0'] = f"={L_RATE}{ri}"
 
         if sentinel:
             pass
