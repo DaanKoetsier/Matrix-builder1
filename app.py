@@ -312,11 +312,13 @@ def make_zip(results):
 
 
 def make_combined(results, variables_layout_rows, stage='minimal',
-                  pallet_maut=None, pallet_defaults=None, carrier_defaults=None):
+                  pallet_maut=None, pallet_defaults=None, carrier_defaults=None,
+                  all_country_maut=None, gbp_to_eur=None):
     """Build ONE workbook with every country's matrix (for the given stage:
-    'extended', 'optimized' or 'minimal') in a single sheet. Written numerically
-    so each country keeps its own per-country surcharges (MAUT differs by country
-    and can't be a single shared Variables formula)."""
+    'extended', 'optimized' or 'minimal') in a single sheet. TOTAL_PRICE and the
+    surcharges it sums are live formulas referencing a comprehensive, every-
+    country Variables sheet (so per-country MAUT/TOLL stay correct even though
+    the sheet spans multiple countries — each row looks up its own country)."""
     key = f'{stage}_df'
     frames = []
     for country, r in results.items():
@@ -329,12 +331,10 @@ def make_combined(results, variables_layout_rows, stage='minimal',
     if not frames:
         return None
     out = Path(tempfile.mkdtemp()) / f'Combined_Matrix_{stage}.xlsx'
-    # Numeric, not formulas: a single shared sheet can't carry per-country MAUT
-    # (DPD/DHL differ by country). Formulas would reference one Variables cell and
-    # apply the same % to every country. Numeric values keep each country correct.
     pl.write_combined_matrix(frames, out, variables_layout_rows,
                              pallet_maut=pallet_maut, pallet_defaults=pallet_defaults,
-                             carrier_defaults=carrier_defaults, formulas=False)
+                             carrier_defaults=carrier_defaults, formulas=False,
+                             all_country_maut=all_country_maut, gbp_to_eur=gbp_to_eur)
     return Path(out).read_bytes()
 
 
@@ -710,6 +710,11 @@ if (run_btn or exp_btn) and uploaded and selected:
     st.session_state['pallet_defaults_used'] = pal_defaults
     st.session_state['carrier_defaults_used'] = carrier_defaults(
         fuel_vals, _maut_dhl_ref, _maut_dpd_ref)
+    # Every-country MAUT (DPD/DHL-ROS) reference, so the Variables sheet shows
+    # every country in every file, not just the one(s) being generated — only
+    # available from the master rate card, which covers all countries at once.
+    all_country_maut = master['MAUT'] if (is_master and master is not None) else None
+    st.session_state['all_country_maut_used'] = all_country_maut
     progress = st.progress(0, text="Starting…")
 
     for idx, country in enumerate(selected):
@@ -751,7 +756,8 @@ if (run_btn or exp_btn) and uploaded and selected:
                     pallet_overrides=pal_overrides, pallet_maut=pallet_maut_table,
                     pallet_max_band_kg=(pallet_max_band_kg or None),
                     express_only=express_mode,
-                    parcel_postcodes=parcel_postcodes)
+                    parcel_postcodes=parcel_postcodes,
+                    all_country_maut=all_country_maut)
                 result = persist(result)
             if express_mode:
                 result = express_rename(result)
@@ -822,7 +828,8 @@ def render_results(results, heading, kp, fname_prefix, *, caption=None):
                 results, _vl_rows, stage=_stage,
                 pallet_maut=st.session_state.get('pallet_maut_table'),
                 pallet_defaults=st.session_state.get('pallet_defaults_used'),
-                carrier_defaults=st.session_state.get('carrier_defaults_used'))
+                carrier_defaults=st.session_state.get('carrier_defaults_used'),
+                all_country_maut=st.session_state.get('all_country_maut_used'))
             if _combined is not None:
                 st.download_button(
                     _label, data=_combined,
