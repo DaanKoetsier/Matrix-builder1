@@ -2207,7 +2207,7 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
 #   FUEL      = fuel_pct      * RATE_BASE        (global)
 #   MOBILITY  = mobility_pct  * RATE_BASE        (global)
 #   MAUT      = maut_pct(country, band) * RATE_BASE   (per-country, 2-tier)
-#   TOLL      = toll_pct(country) * RATE_BASE     (GB only in this contract)
+#   TOLL      = toll_pct(country) * RATE_BASE     (per-country DHL Freight rate)
 #   ADMIN     = admin_per_shipment (€, global flat per row)
 #   TOTAL     = RATE_BASE + FUEL + MOBILITY + MAUT + TOLL + ADMIN
 #
@@ -2229,15 +2229,15 @@ PALLET_DEFAULTS = {
 
 # Per-country surcharge overrides (pallets — DHL-FENDER only, for now; parcels
 # are not yet toll-adjusted per country). app.py overwrites GB's toll_pct /
-# admin_per_shipment here from the sidebar. Countries absent here default to
-# 0 toll (shown as such in the Variables sheet, not guessed).
+# admin_per_shipment here from the sidebar. A country absent here falls back
+# to PALLET_TOLL_DEFAULT_PCT below — DHL Freight's "Rest of Europe" rate, not 0.
+PALLET_TOLL_DEFAULT_PCT = 0.0043   # "Rest of Europe" (also GB's own rate)
 PALLET_COUNTRY_OVERRIDES = {
     'GB': {'toll_pct': 0.0043, 'admin_per_shipment': 46.51},
     'NL': {'toll_pct': 0.0343},
     'BE': {'toll_pct': 0.0148},
+    'LU': {'toll_pct': 0.0148},
     'DE': {'toll_pct': 0.0065},
-    'IT': {'toll_pct': 0.0043},
-    'FR': {'toll_pct': 0.0043},
 }
 
 # Per-country MAUT as a % of RATE_BASE, with an optional 2nd tier above a weight
@@ -2313,7 +2313,7 @@ def _build_all_country_variables(vars_rows, all_country_maut=None,
         vars_rows.append((None, None))
         vars_rows.append(('TOLL PALLET — per country', None))
         for iso in countries:
-            pct = pallet_overrides.get(iso, {}).get('toll_pct', 0.0)
+            pct = pallet_overrides.get(iso, {}).get('toll_pct', PALLET_TOLL_DEFAULT_PCT)
             vars_rows.append((f'TOLL PALLET {iso}', pct))
             lookup['toll_pallet'][iso] = len(vars_rows)
 
@@ -2371,7 +2371,7 @@ def build_pallet_df(country, zip_rate_map, band_ceilings,
     fuel_pct  = pd_def['fuel_pct']
     mob_pct   = pd_def['mobility_pct']
     factor    = pd_def['factor']
-    toll_pct  = ov.get('toll_pct', pd_def.get('toll_pct', 0.0))
+    toll_pct  = ov.get('toll_pct', PALLET_TOLL_DEFAULT_PCT)
     admin     = ov.get('admin_per_shipment', pd_def['admin_per_shipment'])
     service   = pd_def['service_level']
     maut_known = iso in mt
