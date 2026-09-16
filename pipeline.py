@@ -833,7 +833,7 @@ def _common(site, client, carrier, iso2):
 
 def build_combined_weight_rows(c0, bands, max_parcel, service_level,
                                max_ew=None, postcode=None, user_def_type_2=None,
-                               min_parcel=1):
+                               min_parcel=1, mrpp=None):
     """Combined-weight pricing: the band rate is the freight for the WHOLE
     shipment, looked up ONCE on the total payweight — never rate * parcel_count.
 
@@ -855,6 +855,12 @@ def build_combined_weight_rows(c0, bands, max_parcel, service_level,
     250 kg and keeps the matrix from exploding, while still covering heavy
     multi-parcel shipments. EACH_WEIGHT is NOT snapped to the integer grid, so
     no reachable band/parcel combination is dropped.
+
+    `mrpp` (Minimum Revenue Per Parcel): when set, RATE_BASE is the higher of
+    the payweight-tier lookup and mp * mrpp — a per-shipment floor so a
+    multi-parcel shipment never prices below its per-box minimum. Currently
+    only UPSGB EXPRESS SAVER carries this (see the 'EXPS_MRPP' row parsed from
+    the rate card).
     """
     rows = []
     for band_top, rate, per_kg in bands:
@@ -864,10 +870,11 @@ def build_combined_weight_rows(c0, bands, max_parcel, service_level,
             each = band_top / mp
             if max_ew is not None and each > max_ew + 1e-9:
                 continue                 # band unreachable with this few parcels
+            rate_base = max(rate, mp * mrpp) if mrpp else rate
             row = {**c0, 'SERVICE_LEVEL': service_level,
                    'MAX_PARCEL': mp,
                    'EACH_WEIGHT': round(each, 6),            # cap; mp*each = band_top
-                   'RATE_BASE': round(rate, 4)}              # ONE lookup, no * mp
+                   'RATE_BASE': round(rate_base, 4)}         # ONE lookup, no * mp
             if postcode is not None:
                 row['POSTCODE'] = postcode
             if user_def_type_2 is not None:
@@ -1077,9 +1084,13 @@ def build_rows_upsgb(rate_data, country_cfg):
         c0, bands_stdm, max_p, service_level='STANDARD',
         max_ew=max_ew, min_parcel=2)
 
-    # EXPS — express saver: billed on TOTAL shipment payweight (one lookup).
+    # EXPS — express saver: billed on TOTAL shipment payweight (one lookup),
+    # floored at mp * MRPP (minimum revenue per parcel) when the rate card
+    # carries one — a multi-parcel shipment never prices below its per-box
+    # minimum even if the payweight tier alone would be cheaper.
     bands = collapse_same_rate_tiers(rate_data.get('EXPS', []))
-    rows += build_combined_weight_rows(c0, bands, max_p, 'EXPRESS SAVER', max_ew=max_ew)
+    rows += build_combined_weight_rows(c0, bands, max_p, 'EXPRESS SAVER', max_ew=max_ew,
+                                       mrpp=rate_data.get('EXPS_MRPP'))
     return rows
 
 def build_rows_upswea(rate_data, country_cfg):

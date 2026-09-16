@@ -323,11 +323,29 @@ def _parse_postnord(ws):
 
 
 def _parse_gb_tiers(ws):
-    """Single-rate-column tier table (UPSGB STDS/STDM/EXPS)."""
+    """Single-rate-column tier table (UPSGB STDS/STDM/EXPS).
+
+    Returns (tiers, mrpp). `mrpp` is the per-parcel minimum-revenue floor from
+    an optional 'MRPP' row directly under the header (UPSGB EXPS only — the
+    S09-12.2026 rate card adds this for "Shipments UPSGB EXPS with multi rate
+    per parcel"), or None when the table has no such row. The MRPP row is
+    skipped before tier extraction so it isn't mistaken for a weight band.
+    """
     hrow, from_col, to_col = _scan_from_to(ws)
     if not hrow:
-        return []
-    return pl._extract_tiers(ws, hrow, from_col, to_col, to_col + 1)
+        return [], None
+    rate_col = to_col + 1
+    mrpp = None
+    body_start = hrow
+    label = ws.cell(hrow + 1, from_col).value
+    if isinstance(label, str) and 'MRPP' in label.upper():
+        try:
+            mrpp = pl._parse_float(ws.cell(hrow + 1, rate_col).value)
+        except (TypeError, ValueError):
+            mrpp = None
+        body_start = hrow + 1
+    tiers = pl._extract_tiers(ws, body_start, from_col, to_col, rate_col)
+    return tiers, mrpp
 
 
 def _parse_linehaul(ws):
@@ -421,11 +439,11 @@ def parse_master_rate_card(path):
     # ── UPSGB ──────────────────────────────────────────────────────────────────
     gb = {}
     ws = sheet('PARCEL - UPSGB - STDS')
-    if ws: gb['STDS'] = _parse_gb_tiers(ws)
+    if ws: gb['STDS'], _ = _parse_gb_tiers(ws)
     ws = sheet('PARCEL - UPSGB - STDM')
-    if ws: gb['STDM'] = _parse_gb_tiers(ws)
+    if ws: gb['STDM'], _ = _parse_gb_tiers(ws)
     ws = sheet('PARCEL - UPSGB - EXPS')
-    if ws: gb['EXPS'] = _parse_gb_tiers(ws)
+    if ws: gb['EXPS'], gb['EXPS_MRPP'] = _parse_gb_tiers(ws)
     ws = sheet('PARCEL - UPS GB - LINEHAUL', 'PARCEL - UPSGB - LINEHAUL')
     if ws: gb['linehaul'] = _parse_linehaul(ws)
     if gb:
