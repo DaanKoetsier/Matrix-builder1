@@ -98,11 +98,12 @@ CARRIER_DEFAULTS = {
         'services': ['STANDARD'],
         'has_postcode': False,
         'volume_divisor': 167,
-        'fuel_pct': 0.0,
-        'fuel_variables_ref': None,
+        'fuel_pct': 0.27,
+        'fuel_variables_ref': 'B11',
         'maut_pct': 0.0,
         'maut_variables_ref': None,
-        'linehaul_per_parcel': 0.0,
+        'linehaul_per_parcel': 1.31,
+        'linehaul_variables_ref': 'B12',
     },
     'DHL-FREIGHT': {
         'label': 'DHL Freight',
@@ -127,6 +128,9 @@ VARIABLES_LAYOUT = [
     (None, None),              # B7  blank spacer
     ('MAUT DPD',      0.05),   # B8
     ('MAUT DHL',      0.06),   # B9
+    (None, None),              # B10 blank spacer
+    ('FUEL UPSWEA',    0.27),  # B11
+    ('LINEHAUL UPSWEA', 1.31), # B12
 ]
 
 _BASE_CARRIERS   = ['UPDE', 'DPD', 'DHL-ROS', 'UPSNL']
@@ -1233,15 +1237,21 @@ def _build_formulas_for_row(row_dict, excel_row, carrier_defaults=None, lookup=N
     iso    = row_dict.get('_ISO2')
     f      = {}
 
-    # RATE_BASE2.0 is what FUEL/MAUT/TOTAL_PRICE actually build from — for
-    # every carrier except UPSGB it's just RATE_BASE. UPSGB's master-file
-    # rate is quoted in GBP, so RATE_BASE2.0 converts it to EUR via the
-    # editable 'GBP TO EUR' Variables cell.
-    if row_dict['CARRIER_ID'] == 'UPSGB' and lookup.get('gbp_eur'):
-        f['RATE_BASE2.0'] = f"={L['RATE_BASE']}{excel_row}*Variables!$B${lookup['gbp_eur']}"
-    else:
-        f['RATE_BASE2.0'] = f"={L['RATE_BASE']}{excel_row}"
+    # RATE_BASE2.0 always mirrors RATE_BASE now — for UPSGB the conversion
+    # itself lives on RATE_BASE (below), so both columns show the identical
+    # (already-converted) number instead of one showing raw GBP and the
+    # other EUR.
+    f['RATE_BASE2.0'] = f"={L['RATE_BASE']}{excel_row}"
     rb2 = L['RATE_BASE2.0']
+
+    # UPSGB's master-file rate is quoted in GBP; RATE_BASE itself converts it
+    # to EUR via the editable 'GBP TO EUR' Variables cell (embedding the raw
+    # parsed GBP number so the cell stays a live formula, not a hardcoded
+    # pre-converted literal).
+    raw_rate = row_dict.get('RATE_BASE')
+    if (row_dict['CARRIER_ID'] == 'UPSGB' and lookup.get('gbp_eur')
+            and raw_rate is not None and not pd.isna(raw_rate)):
+        f['RATE_BASE'] = f"={float(raw_rate)}*Variables!$B${lookup['gbp_eur']}"
 
     # Overflow buckets leave MAX_PARCEL / EACH_WEIGHT blank — skip the grid
     # formulas for them so we don't emit "=*" ; their values stay literal (None).
@@ -1263,6 +1273,9 @@ def _build_formulas_for_row(row_dict, excel_row, carrier_defaults=None, lookup=N
     elif cfg.get('maut_variables_ref'):
         ref = cfg['maut_variables_ref']
         f['MAUT'] = f"=Variables!${ref[0]}${ref[1:]}*{rb2}{excel_row}"
+    if has_grid and cfg.get('linehaul_variables_ref'):
+        ref = cfg['linehaul_variables_ref']
+        f['Linehaul UPSDE'] = f"=Variables!${ref[0]}${ref[1:]}*{L['MAX_PARCEL']}{excel_row}"
     lh = L['Linehaul UPSDE']
     f['TOTAL_PRICE'] = (
         f"={rb2}{excel_row}+{L['RATE_EXTRA']}{excel_row}"
@@ -2435,6 +2448,11 @@ def _align_columns(frames):
 _FUEL_VAR_NAME = {
     'UPDE': 'FUEL UPSDE', 'DHL-ROS': 'FUEL DHL', 'DPD': 'FUEL DPD',
     'UPSNL': 'FUEL UPSNL', 'POSTNORD': 'FUEL POSTNORD', 'UPSGB': 'FUEL UPSGB',
+    'UPSWEA': 'FUEL UPSWEA',
+}
+
+_LINEHAUL_VAR_NAME = {
+    'UPSWEA': 'LINEHAUL UPSWEA',
 }
 
 
@@ -2485,7 +2503,8 @@ def write_matrix_numeric(df, output_path, country_cfg, variables_layout=None,
             sum_start = rb2_letter
             sum_end   = L[order[tp_idx - 1]]
 
-    fuel_rows = {cid: _find_var_row(vl, name) for cid, name in _FUEL_VAR_NAME.items()}
+    fuel_rows     = {cid: _find_var_row(vl, name) for cid, name in _FUEL_VAR_NAME.items()}
+    linehaul_rows = {cid: _find_var_row(vl, name) for cid, name in _LINEHAUL_VAR_NAME.items()}
     r_fuel_pallet = _find_var_row(vl, 'FUEL DHL PALLET')
     r_mobility    = _find_var_row(vl, 'MOBILITY PALLET')
     r_admin       = _find_var_row(vl, 'ADMIN PALLET')
@@ -2500,10 +2519,12 @@ def write_matrix_numeric(df, output_path, country_cfg, variables_layout=None,
         sentinel = is_bucket and pd.isna(rec.get('RATE_BASE'))
         formulas = {}
 
-        if not sentinel and rb2_letter:
-            if carrier == 'UPSGB' and lookup.get('gbp_eur'):
-                formulas['RATE_BASE2.0'] = f"={L['RATE_BASE']}{ri}*Variables!$B${lookup['gbp_eur']}"
-            else:
+        if not sentinel:
+            raw_rate = rec.get('RATE_BASE')
+            if (carrier == 'UPSGB' and lookup.get('gbp_eur')
+                    and raw_rate is not None and not pd.isna(raw_rate)):
+                formulas['RATE_BASE'] = f"={float(raw_rate)}*Variables!$B${lookup['gbp_eur']}"
+            if rb2_letter:
                 formulas['RATE_BASE2.0'] = f"={L['RATE_BASE']}{ri}"
 
         if not sentinel and is_pallet:
@@ -2530,6 +2551,11 @@ def write_matrix_numeric(df, output_path, country_cfg, variables_layout=None,
             maut_row = lookup.get(maut_key, {}).get(iso) if maut_key else None
             if maut_row and 'MAUT' in order:
                 formulas['MAUT'] = f"=Variables!$B${maut_row}*{rb2_letter}{ri}"
+            lh_row = linehaul_rows.get(carrier)
+            mp = rec.get('MAX_PARCEL')
+            mp_letter = L.get('MAX_PARCEL')
+            if lh_row and mp_letter and 'Linehaul UPSDE' in order and mp is not None and not pd.isna(mp):
+                formulas['Linehaul UPSDE'] = f"=Variables!$B${lh_row}*{mp_letter}{ri}"
 
         if not sentinel and sum_start:
             formulas['TOTAL_PRICE'] = f"=SUM({sum_start}{ri}:{sum_end}{ri})"
@@ -2654,7 +2680,8 @@ def write_matrix_with_formulas(df, output_path, country_cfg,
     # country — same layout regardless of which country this file covers.
     vars_rows, lookup = _build_all_country_variables(
         vars_rows, all_country_maut, pallet_overrides, mt, gbp_to_eur)
-    fuel_rows = {cid: _find_var_row(vars_rows, name) for cid, name in _FUEL_VAR_NAME.items()}
+    fuel_rows     = {cid: _find_var_row(vars_rows, name) for cid, name in _FUEL_VAR_NAME.items()}
+    linehaul_rows = {cid: _find_var_row(vars_rows, name) for cid, name in _LINEHAUL_VAR_NAME.items()}
 
     # write Variables sheet
     wb = Workbook()
@@ -2689,11 +2716,11 @@ def write_matrix_with_formulas(df, output_path, country_cfg,
         sentinel = is_bucket and pd.isna(rec.get('RATE_BASE'))
         formulas = {}
 
-        if sentinel:
-            pass
-        elif carrier == 'UPSGB' and lookup.get('gbp_eur'):
-            formulas['RATE_BASE2.0'] = f"={L_RATE}{ri}*Variables!$B${lookup['gbp_eur']}"
-        else:
+        if not sentinel:
+            raw_rate = rec.get('RATE_BASE')
+            if (carrier == 'UPSGB' and lookup.get('gbp_eur')
+                    and raw_rate is not None and not pd.isna(raw_rate)):
+                formulas['RATE_BASE'] = f"={float(raw_rate)}*Variables!$B${lookup['gbp_eur']}"
             formulas['RATE_BASE2.0'] = f"={L_RATE}{ri}"
         rb2 = L['RATE_BASE2.0']
 
@@ -2743,6 +2770,13 @@ def write_matrix_with_formulas(df, output_path, country_cfg,
             elif cfg.get('maut_variables_ref'):
                 ref = cfg['maut_variables_ref']
                 formulas['MAUT'] = f"=Variables!${ref[0]}${ref[1:]}*{rb2}{ri}"
+            lh_row = linehaul_rows.get(carrier)
+            mp = rec.get('MAX_PARCEL')
+            if lh_row and L_MP and L_LH and mp is not None and not pd.isna(mp):
+                formulas['Linehaul UPSDE'] = f"=Variables!$B${lh_row}*{L_MP}{ri}"
+            elif cfg.get('linehaul_variables_ref') and L_MP and L_LH and mp is not None and not pd.isna(mp):
+                ref = cfg['linehaul_variables_ref']
+                formulas['Linehaul UPSDE'] = f"=Variables!${ref[0]}${ref[1:]}*{L_MP}{ri}"
             parts = [f"{rb2}{ri}"]
             if L_EXTRA: parts.append(f"{L_EXTRA}{ri}")
             parts.append(f"{L_FUEL}{ri}")
