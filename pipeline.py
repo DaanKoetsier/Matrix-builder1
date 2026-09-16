@@ -2241,19 +2241,17 @@ PALLET_COUNTRY_OVERRIDES = {
 }
 
 # Per-country MAUT as a % of RATE_BASE, with an optional 2nd tier above a weight
-# breakpoint:  (low_pct, high_pct, tier_kg)  — high_pct applies when band ceiling
-# > tier_kg. Source: DSV pallet MAUT list (S2026). Low tier is 2.53% everywhere;
-# the high tier (>2500 kg, up to FTL) is 5.44% for the road-toll countries below
-# and 2.53% (flat) for the rest. Countries absent here default to 0 MAUT and raise
-# a warning (never guessed).
-PALLET_MAUT = {iso: (0.0253, 0.0544, 2500) for iso in
-               ('AT', 'CH', 'CZ', 'DE', 'HR', 'HU', 'PL', 'SI', 'SK')}
-PALLET_MAUT.update({iso: (0.0253, 0.0253, 2500) for iso in
-                    ('BA', 'BG', 'DK', 'EE', 'FI', 'GR', 'IT', 'LT', 'LU', 'LV',
-                     'MK', 'NO', 'RO', 'RS', 'SE', 'TR')})
+# Per-country MAUT as a single % of RATE_BASE (no weight-band tiering).
+# Source: DSV pallet MAUT list (S2026); DE/IT/FR confirmed directly by the
+# client. Countries absent here default to 0 MAUT and raise a warning (never
+# guessed).
+PALLET_MAUT = {iso: 0.0253 for iso in
+               ('AT', 'BA', 'BG', 'CH', 'CZ', 'DE', 'DK', 'EE', 'FI', 'GR',
+                'HR', 'HU', 'IT', 'LT', 'LU', 'LV', 'MK', 'NO', 'PL', 'RO',
+                'RS', 'SE', 'SI', 'SK', 'TR')}
 # Confirmed by Fender logistics: these countries are genuinely 0% MAUT.
 # Listed explicitly so they price correctly and stop firing "MAUT unknown" warnings.
-PALLET_MAUT.update({iso: (0.0, 0.0, 2500) for iso in
+PALLET_MAUT.update({iso: 0.0 for iso in
                     ('BE', 'ES', 'FR', 'GB', 'IE', 'MT', 'NL', 'PT')})
 
 
@@ -2271,8 +2269,8 @@ def _build_all_country_variables(vars_rows, all_country_maut=None,
         'gbp_eur':    row (1-based),
         'maut_dpd':     {iso: row},   # parcel DPD MAUT %
         'maut_dhlros':  {iso: row},   # parcel DHL-ROS MAUT %
-        'toll_pallet':  {iso: row},   # pallet road-toll % (GB-only today)
-        'maut_pallet':  {iso: row},   # pallet MAUT low(B)/high(C)/tier(D)
+        'toll_pallet':  {iso: row},   # pallet road-toll %
+        'maut_pallet':  {iso: row},   # pallet MAUT % (single rate, column B)
       }
     """
     all_country_maut  = all_country_maut or {}
@@ -2320,16 +2318,11 @@ def _build_all_country_variables(vars_rows, all_country_maut=None,
     lookup['maut_pallet'] = {}
     if countries:
         vars_rows.append((None, None))
-        vars_rows.append(('MAUT PALLET — low(B) / high(C) / tier kg(D), per country', None))
+        vars_rows.append(('MAUT PALLET — per country', None))
         for iso in countries:
-            low, high, tier = pallet_maut_table.get(iso, (0.0, 0.0, 2500))
-            r = len(vars_rows) + 1
-            vars_rows.append((f'MAUT PALLET {iso}', low))
-            lookup['maut_pallet'][iso] = r
-            # low/high/tier need columns B/C/D on this same row — the caller
-            # writes vars_rows sequentially into column B only, so stash the
-            # extra two values for the caller to place in C/D.
-            vars_rows[-1] = (f'MAUT PALLET {iso}', low, high, tier)
+            pct = pallet_maut_table.get(iso, 0.0)
+            vars_rows.append((f'MAUT PALLET {iso}', pct))
+            lookup['maut_pallet'][iso] = len(vars_rows)
 
     return vars_rows, lookup
 
@@ -2347,12 +2340,8 @@ PALLET_COLUMN_ORDER = [
 ]
 
 
-def _pallet_maut_for(country, ceiling_kg, maut_table):
-    rule = maut_table.get(country.upper())
-    if rule is None:
-        return None                       # unknown -> caller warns
-    low, high, tier = rule
-    return high if (ceiling_kg is not None and ceiling_kg > tier) else low
+def _pallet_maut_for(country, maut_table):
+    return maut_table.get(country.upper())    # None -> unknown, caller warns
 
 
 def build_pallet_df(country, zip_rate_map, band_ceilings,
@@ -2391,7 +2380,7 @@ def build_pallet_df(country, zip_rate_map, band_ceilings,
             rate_base = round(rate / factor, 6)
             fuel = round(fuel_pct * rate_base, 6)
             mob  = round(mob_pct * rate_base, 6)
-            maut_pct = _pallet_maut_for(iso, ceil, mt) or 0.0
+            maut_pct = _pallet_maut_for(iso, mt) or 0.0
             maut = round(maut_pct * rate_base, 8)
             toll = round(toll_pct * rate_base, 6)
             total = round(rate_base + fuel + mob + maut + toll + admin, 6)
@@ -2541,10 +2530,7 @@ def write_matrix_numeric(df, output_path, country_cfg, variables_layout=None,
                 formulas['MOBILITY'] = f"=Variables!$B${r_mobility}*{rb2_letter}{ri}"
             maut_row = lookup.get('maut_pallet', {}).get(iso)
             if maut_row and 'MAUT' in order:
-                low, high, tier = (pallet_maut_table or PALLET_MAUT).get(iso, (0.0, 0.0, 2500))
-                mw = rec.get('MAX_WEIGHT')
-                col_letter = 'C' if (mw is not None and not pd.isna(mw) and mw > tier) else 'B'
-                formulas['MAUT'] = f"=Variables!${col_letter}${maut_row}*{rb2_letter}{ri}"
+                formulas['MAUT'] = f"=Variables!$B${maut_row}*{rb2_letter}{ri}"
             toll_row = lookup.get('toll_pallet', {}).get(iso)
             if toll_row and 'TOLL' in order:
                 formulas['TOLL'] = f"=Variables!$B${toll_row}*{rb2_letter}{ri}"
@@ -2736,13 +2722,9 @@ def write_matrix_with_formulas(df, output_path, country_cfg,
         elif is_pallet:
             formulas['FUEL']     = f"=Variables!$B${r_fuel}*{rb2}{ri}"
             formulas['MOBILITY'] = f"=Variables!$B${r_mob}*{rb2}{ri}"
-            # two-tier MAUT: pick low/high by this row's band vs the country tier
-            low, high, tier = mt.get(iso, (0.0, 0.0, 2500))
-            mw = rec.get('MAX_WEIGHT')
             r_iso = lookup.get('maut_pallet', {}).get(iso)
-            col = 'C' if (mw is not None and not pd.isna(mw) and mw > tier) else 'B'
             if r_iso:
-                formulas['MAUT'] = f"=Variables!${col}${r_iso}*{rb2}{ri}"
+                formulas['MAUT'] = f"=Variables!$B${r_iso}*{rb2}{ri}"
             r_toll = lookup.get('toll_pallet', {}).get(iso)
             if L_TOLL and r_toll:
                 formulas['TOLL'] = f"=Variables!$B${r_toll}*{rb2}{ri}"
