@@ -44,7 +44,7 @@ logging.basicConfig(level=logging.INFO)
 
 ALL_COUNTRIES  = sorted(pl.COUNTRY_CONFIG.keys())
 CARRIER_LABELS = {cid: cfg['label'] for cid, cfg in pl.CARRIER_DEFAULTS.items()}
-FUEL_CARRIERS  = ['UPDE', 'DHL-ROS', 'DPD', 'UPSNL', 'POSTNORD', 'UPSGB']
+FUEL_CARRIERS  = ['UPDE', 'DHL-ROS', 'DPD', 'UPSNL', 'POSTNORD', 'UPSGB', 'UPSWEA']
 MAUT_CARRIERS  = ['DPD', 'DHL-ROS']
 EXPRESS_CARRIERS = ['UPDE', 'UPSNL', 'UPSGB']   # the only carriers quoting EXPRESS SAVER
 
@@ -69,11 +69,14 @@ def variables_layout(fuel_vals, maut_dhl, maut_dpd, pallet_vals=None):
         ('MAUT DPD',      maut_dpd),                          # B8
         ('MAUT DHL',      maut_dhl),                          # B9
         (None, None),                                         # B10
-        ('FUEL DHL PALLET', pv.get('fuel',     0.155)),       # B11
-        ('MOBILITY PALLET', pv.get('mobility', 0.04)),        # B12
-        ('TOLL UK PALLET',  pv.get('toll',     0.0043)),      # B13
-        ('ADMIN PALLET',    pv.get('admin',    46.51)),       # B14
-        ('FACTOR DHL',      pv.get('factor',   4.13)),         # B15
+        ('FUEL UPSWEA',     fuel_vals.get('UPSWEA', 0.27)),   # B11
+        ('LINEHAUL UPSWEA', pl.CARRIER_DEFAULTS['UPSWEA']['linehaul_per_parcel']),  # B12
+        (None, None),                                         # B13
+        ('FUEL DHL PALLET', pv.get('fuel',     0.155)),       # B14
+        ('MOBILITY PALLET', pv.get('mobility', 0.04)),        # B15
+        ('TOLL UK PALLET',  pv.get('toll',     0.0043)),      # B16
+        ('ADMIN PALLET',    pv.get('admin',    46.51)),       # B17
+        ('FACTOR DHL',      pv.get('factor',   4.13)),         # B18
     ]
 
 
