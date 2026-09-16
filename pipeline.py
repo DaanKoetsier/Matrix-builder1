@@ -2227,10 +2227,17 @@ PALLET_DEFAULTS = {
     },
 }
 
-# Per-country surcharge overrides. Only the UK carries the road toll in this
-# contract. app.py overwrites toll_pct / admin_per_shipment here from the sidebar.
+# Per-country surcharge overrides (pallets — DHL-FENDER only, for now; parcels
+# are not yet toll-adjusted per country). app.py overwrites GB's toll_pct /
+# admin_per_shipment here from the sidebar. Countries absent here default to
+# 0 toll (shown as such in the Variables sheet, not guessed).
 PALLET_COUNTRY_OVERRIDES = {
     'GB': {'toll_pct': 0.0043, 'admin_per_shipment': 46.51},
+    'NL': {'toll_pct': 0.0343},
+    'BE': {'toll_pct': 0.0148},
+    'DE': {'toll_pct': 0.0065},
+    'IT': {'toll_pct': 0.0043},
+    'FR': {'toll_pct': 0.0043},
 }
 
 # Per-country MAUT as a % of RATE_BASE, with an optional 2nd tier above a weight
