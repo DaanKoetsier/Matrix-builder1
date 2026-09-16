@@ -164,6 +164,12 @@ COUNTRY_CONFIG['GB']['carriers'] = ['UPSGB', 'UPSNL']
 COUNTRY_CONFIG['CH']['carriers'] = ['UPSWEA']
 COUNTRY_CONFIG['NO']['carriers'] = ['UPSWEA']
 
+# UPSGB's master-file rates are quoted in GBP (UK domestic contract); every
+# other carrier's rates are already EUR. This is the editable conversion rate
+# — it's also written into every Variables sheet ('GBP TO EUR') so it can be
+# tweaked by hand and RATE_BASE2.0 recalculates for UPSGB rows.
+GBP_TO_EUR = 1.15
+
 # ISO 3166-1 alpha-2 -> alpha-3, applied only to the final written output
 # (COUNTRYISO2 column values / sheet titles). All internal logic — parsing,
 # COUNTRY_CONFIG lookups, the app's country selector — stays on alpha-2,
@@ -1208,12 +1214,24 @@ COL_LETTER = {name: openpyxl.utils.get_column_letter(i + 1)
               for i, name in enumerate(COLUMN_ORDER)}
 
 
-def _build_formulas_for_row(row_dict, excel_row, carrier_defaults=None):
-    cd  = carrier_defaults or CARRIER_DEFAULTS
-    L   = COL_LETTER
-    cfg = cd[row_dict['CARRIER_ID']]
-    f   = {}
-    f['RATE_BASE2.0'] = f"={L['RATE_BASE']}{excel_row}"
+def _build_formulas_for_row(row_dict, excel_row, carrier_defaults=None, lookup=None):
+    cd     = carrier_defaults or CARRIER_DEFAULTS
+    L      = COL_LETTER
+    cfg    = cd[row_dict['CARRIER_ID']]
+    lookup = lookup or {}
+    iso    = row_dict.get('_ISO2')
+    f      = {}
+
+    # RATE_BASE2.0 is what FUEL/MAUT/TOTAL_PRICE actually build from — for
+    # every carrier except UPSGB it's just RATE_BASE. UPSGB's master-file
+    # rate is quoted in GBP, so RATE_BASE2.0 converts it to EUR via the
+    # editable 'GBP TO EUR' Variables cell.
+    if row_dict['CARRIER_ID'] == 'UPSGB' and lookup.get('gbp_eur'):
+        f['RATE_BASE2.0'] = f"={L['RATE_BASE']}{excel_row}*Variables!$B${lookup['gbp_eur']}"
+    else:
+        f['RATE_BASE2.0'] = f"={L['RATE_BASE']}{excel_row}"
+    rb2 = L['RATE_BASE2.0']
+
     # Overflow buckets leave MAX_PARCEL / EACH_WEIGHT blank — skip the grid
     # formulas for them so we don't emit "=*" ; their values stay literal (None).
     has_grid = (row_dict.get('MAX_PARCEL') is not None
@@ -1224,13 +1242,19 @@ def _build_formulas_for_row(row_dict, excel_row, carrier_defaults=None):
         f['EACH_VOLUME'] = f"={L['EACH_WEIGHT']}{excel_row}/{cfg['volume_divisor']}"
     if cfg.get('fuel_variables_ref'):
         ref = cfg['fuel_variables_ref']
-        f['FUEL'] = f"=Variables!${ref[0]}${ref[1:]}*{L['RATE_BASE']}{excel_row}"
-    if cfg.get('maut_variables_ref'):
+        f['FUEL'] = f"=Variables!${ref[0]}${ref[1:]}*{rb2}{excel_row}"
+    # DPD / DHL-ROS MAUT varies per country — look up this row's own country
+    # in the comprehensive per-country block instead of one shared cell.
+    maut_key = {'DPD': 'maut_dpd', 'DHL-ROS': 'maut_dhlros'}.get(row_dict['CARRIER_ID'])
+    maut_row = lookup.get(maut_key, {}).get(iso) if maut_key else None
+    if maut_row:
+        f['MAUT'] = f"=Variables!$B${maut_row}*{rb2}{excel_row}"
+    elif cfg.get('maut_variables_ref'):
         ref = cfg['maut_variables_ref']
-        f['MAUT'] = f"=Variables!${ref[0]}${ref[1:]}*{L['RATE_BASE']}{excel_row}"
+        f['MAUT'] = f"=Variables!${ref[0]}${ref[1:]}*{rb2}{excel_row}"
     lh = L['Linehaul UPSDE']
     f['TOTAL_PRICE'] = (
-        f"={L['RATE_BASE']}{excel_row}+{L['RATE_EXTRA']}{excel_row}"
+        f"={rb2}{excel_row}+{L['RATE_EXTRA']}{excel_row}"
         f"+{L['FUEL']}{excel_row}+{L['MAUT']}{excel_row}"
         f'+{lh}{excel_row}'
     )
@@ -1238,8 +1262,12 @@ def _build_formulas_for_row(row_dict, excel_row, carrier_defaults=None):
 
 
 def write_matrix_excel(df, output_path, country_cfg,
-                       carrier_defaults=None, variables_layout=None):
+                       carrier_defaults=None, variables_layout=None,
+                       all_country_maut=None, pallet_overrides=None,
+                       pallet_maut_table=None, gbp_to_eur=None):
     vl  = variables_layout or VARIABLES_LAYOUT
+    vl, lookup = _build_all_country_variables(
+        vl, all_country_maut, pallet_overrides, pallet_maut_table, gbp_to_eur)
     wb  = Workbook()
     ws  = wb.active
     ws.title = f"{_iso3(country_cfg['iso2'])} Matrix"
@@ -1247,6 +1275,7 @@ def write_matrix_excel(df, output_path, country_cfg,
         ws.cell(1, ci, col)
     df = df.copy()
     if 'COUNTRYISO2' in df.columns:
+        df['_ISO2'] = df['COUNTRYISO2']
         df['COUNTRYISO2'] = df['COUNTRYISO2'].map(_iso3)
     df_sorted = df.sort_values('TOTAL_PRICE', kind='stable').reset_index(drop=True)
     bucket_fill = PatternFill('solid', fgColor='FFF2CC')   # soft amber = catch-all bucket
@@ -1255,7 +1284,7 @@ def write_matrix_excel(df, output_path, country_cfg,
         # A sentinel catch-all (bucket with no rate components) keeps its literal
         # TOTAL_PRICE; building a formula would sum blanks to 0.
         sentinel = is_bucket and pd.isna(row_dict.get('RATE_BASE'))
-        formulas = {} if sentinel else _build_formulas_for_row(row_dict, ri, carrier_defaults)
+        formulas = {} if sentinel else _build_formulas_for_row(row_dict, ri, carrier_defaults, lookup)
         for ci, col in enumerate(COLUMN_ORDER, 1):
             if col in formulas:
                 cell = ws.cell(ri, ci, formulas[col])
@@ -1265,9 +1294,7 @@ def write_matrix_excel(df, output_path, country_cfg,
             if is_bucket:
                 cell.fill = bucket_fill
     vs = wb.create_sheet('Variables')
-    for ri, (name, val) in enumerate(vl, 1):
-        vs.cell(ri, 1, name)
-        vs.cell(ri, 2, val)
+    _write_variables_sheet(vs, vl)
     wb.save(output_path)
     log.info('wrote %s (%d rows)', output_path, len(df_sorted))
 
@@ -1941,7 +1968,8 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
                              pallet_zones=None, pallet_defaults=None,
                              pallet_overrides=None, pallet_maut=None,
                              pallet_max_band_kg=None, express_only=False,
-                             parcel_postcodes=None):
+                             parcel_postcodes=None, all_country_maut=None,
+                             gbp_to_eur=None):
     """Build/optimize/write from an already-parsed rate dict.
     Used by the master-file path so the (expensive) parse happens only once.
 
@@ -2060,11 +2088,14 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
             min_all = append_euroconnect_buckets(min_all)
         min_all = _explode_min(min_all)
         write_matrix_with_formulas(ext_all, ext_path, cfg, cd, vl, pallet_maut,
-                                   pallet_defaults, pallet_overrides=pallet_overrides)
+                                   pallet_defaults, pallet_overrides=pallet_overrides,
+                                   all_country_maut=all_country_maut, gbp_to_eur=gbp_to_eur)
         write_matrix_with_formulas(opt_all, opt_path, cfg, cd, vl, pallet_maut,
-                                   pallet_defaults, pallet_overrides=pallet_overrides)
+                                   pallet_defaults, pallet_overrides=pallet_overrides,
+                                   all_country_maut=all_country_maut, gbp_to_eur=gbp_to_eur)
         write_matrix_with_formulas(min_all, min_path, cfg, cd, vl, pallet_maut,
-                                   pallet_defaults, pallet_overrides=pallet_overrides)
+                                   pallet_defaults, pallet_overrides=pallet_overrides,
+                                   all_country_maut=all_country_maut, gbp_to_eur=gbp_to_eur)
         rows_ext, rows_opt, rows_min = len(ext_all), len(opt_all), len(min_all)
         extended_frame, optimized_frame, minimal_frame = ext_all, opt_all, min_all
     elif any_buckets:
@@ -2073,9 +2104,15 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
             df_opt_final = append_euroconnect_buckets(df_opt_final)
             df_min_final = append_euroconnect_buckets(df_min_final)
         df_min_final = _explode_min(df_min_final)
-        write_matrix_excel(df_ext_final, ext_path, cfg, cd, vl)
-        write_matrix_excel(df_opt_final, opt_path, cfg, cd, vl)
-        write_matrix_excel(df_min_final, min_path, cfg, cd, vl)
+        write_matrix_excel(df_ext_final, ext_path, cfg, cd, vl,
+                           all_country_maut=all_country_maut, pallet_overrides=pallet_overrides,
+                           pallet_maut_table=pallet_maut, gbp_to_eur=gbp_to_eur)
+        write_matrix_excel(df_opt_final, opt_path, cfg, cd, vl,
+                           all_country_maut=all_country_maut, pallet_overrides=pallet_overrides,
+                           pallet_maut_table=pallet_maut, gbp_to_eur=gbp_to_eur)
+        write_matrix_excel(df_min_final, min_path, cfg, cd, vl,
+                           all_country_maut=all_country_maut, pallet_overrides=pallet_overrides,
+                           pallet_maut_table=pallet_maut, gbp_to_eur=gbp_to_eur)
         rows_ext, rows_opt, rows_min = (len(df_ext_final), len(df_opt_final),
                                         len(df_min_final))
         extended_frame, optimized_frame = df_ext_final, df_opt_final
@@ -2085,14 +2122,20 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
             df     = append_euroconnect_buckets(df)
             df_opt = append_euroconnect_buckets(df_opt)
             df_min = append_euroconnect_buckets(df_min)
-        write_matrix_excel(df, ext_path, cfg, cd, vl)
-        write_matrix_excel(df_opt, opt_path, cfg, cd, vl)
+        write_matrix_excel(df, ext_path, cfg, cd, vl,
+                           all_country_maut=all_country_maut, pallet_overrides=pallet_overrides,
+                           pallet_maut_table=pallet_maut, gbp_to_eur=gbp_to_eur)
+        write_matrix_excel(df_opt, opt_path, cfg, cd, vl,
+                           all_country_maut=all_country_maut, pallet_overrides=pallet_overrides,
+                           pallet_maut_table=pallet_maut, gbp_to_eur=gbp_to_eur)
         # Use the in-memory minimal frame (optimize_globally_df, computed above)
         # rather than the optimize_globally Excel round-trip + read_excel: the
         # round-trip coerced POSTCODE to float and dropped leading zeros. Explode
         # parcel postcodes, then write numerically.
         df_min = _explode_min(df_min)
-        write_matrix_excel(df_min, min_path, cfg, cd, vl)
+        write_matrix_excel(df_min, min_path, cfg, cd, vl,
+                           all_country_maut=all_country_maut, pallet_overrides=pallet_overrides,
+                           pallet_maut_table=pallet_maut, gbp_to_eur=gbp_to_eur)
         rows_ext, rows_opt, rows_min = len(df), len(df_opt), len(df_min)
         minimal_frame = df_min
         extended_frame, optimized_frame = df, df_opt
@@ -2181,6 +2224,84 @@ PALLET_MAUT.update({iso: (0.0253, 0.0253, 2500) for iso in
 # Listed explicitly so they price correctly and stop firing "MAUT unknown" warnings.
 PALLET_MAUT.update({iso: (0.0, 0.0, 2500) for iso in
                     ('BE', 'ES', 'FR', 'GB', 'IE', 'MT', 'NL', 'PT')})
+
+
+def _build_all_country_variables(vars_rows, all_country_maut=None,
+                                 pallet_overrides=None, pallet_maut_table=None,
+                                 gbp_to_eur=None):
+    """Extend a Variables-sheet row list with a comprehensive, every-country
+    reference block, so the SAME Variables page — every country, every
+    metric — appears in every generated file regardless of which country
+    that file's own rows are for. The client edits any cell here and the
+    rows that reference it recalculate.
+
+    Returns (vars_rows, lookup):
+      lookup = {
+        'gbp_eur':    row (1-based),
+        'maut_dpd':     {iso: row},   # parcel DPD MAUT %
+        'maut_dhlros':  {iso: row},   # parcel DHL-ROS MAUT %
+        'toll_pallet':  {iso: row},   # pallet road-toll % (GB-only today)
+        'maut_pallet':  {iso: row},   # pallet MAUT low(B)/high(C)/tier(D)
+      }
+    """
+    all_country_maut  = all_country_maut or {}
+    pallet_overrides  = pallet_overrides or PALLET_COUNTRY_OVERRIDES
+    pallet_maut_table = pallet_maut_table or PALLET_MAUT
+    gbp_to_eur = GBP_TO_EUR if gbp_to_eur is None else gbp_to_eur
+
+    vars_rows = list(vars_rows)
+    lookup = {}
+
+    vars_rows.append((None, None))
+    vars_rows.append(('GBP TO EUR', gbp_to_eur))
+    lookup['gbp_eur'] = len(vars_rows)
+
+    countries = sorted(set(all_country_maut) | set(pallet_overrides)
+                       | set(pallet_maut_table))
+
+    lookup['maut_dpd'] = {}
+    if countries:
+        vars_rows.append((None, None))
+        vars_rows.append(('MAUT DPD — per country', None))
+        for iso in countries:
+            vars_rows.append((f'MAUT DPD {iso}',
+                              all_country_maut.get(iso, {}).get('DPD', 0.0)))
+            lookup['maut_dpd'][iso] = len(vars_rows)
+
+    lookup['maut_dhlros'] = {}
+    if countries:
+        vars_rows.append((None, None))
+        vars_rows.append(('MAUT DHL-ROS — per country', None))
+        for iso in countries:
+            vars_rows.append((f'MAUT DHL-ROS {iso}',
+                              all_country_maut.get(iso, {}).get('DHL-ROS', 0.0)))
+            lookup['maut_dhlros'][iso] = len(vars_rows)
+
+    lookup['toll_pallet'] = {}
+    if countries:
+        vars_rows.append((None, None))
+        vars_rows.append(('TOLL PALLET — per country', None))
+        for iso in countries:
+            pct = pallet_overrides.get(iso, {}).get('toll_pct', 0.0)
+            vars_rows.append((f'TOLL PALLET {iso}', pct))
+            lookup['toll_pallet'][iso] = len(vars_rows)
+
+    lookup['maut_pallet'] = {}
+    if countries:
+        vars_rows.append((None, None))
+        vars_rows.append(('MAUT PALLET — low(B) / high(C) / tier kg(D), per country', None))
+        for iso in countries:
+            low, high, tier = pallet_maut_table.get(iso, (0.0, 0.0, 2500))
+            r = len(vars_rows) + 1
+            vars_rows.append((f'MAUT PALLET {iso}', low))
+            lookup['maut_pallet'][iso] = r
+            # low/high/tier need columns B/C/D on this same row — the caller
+            # writes vars_rows sequentially into column B only, so stash the
+            # extra two values for the caller to place in C/D.
+            vars_rows[-1] = (f'MAUT PALLET {iso}', low, high, tier)
+
+    return vars_rows, lookup
+
 
 # Extra columns pallet rows carry, in the reference file's order.
 PALLET_COLUMN_ORDER = [
@@ -2300,15 +2421,38 @@ def _align_columns(frames):
     return pd.concat(out, ignore_index=True)
 
 
+_FUEL_VAR_NAME = {
+    'UPDE': 'FUEL UPSDE', 'DHL-ROS': 'FUEL DHL', 'DPD': 'FUEL DPD',
+    'UPSNL': 'FUEL UPSNL', 'POSTNORD': 'FUEL POSTNORD', 'UPSGB': 'FUEL UPSGB',
+}
+
+
+def _find_var_row(vl, name):
+    for i, row in enumerate(vl):
+        if row[0] == name:
+            return i + 1
+    return None
+
+
 def write_matrix_numeric(df, output_path, country_cfg, variables_layout=None,
-                         column_order=None):
-    """Write a matrix as NUMERIC values (no formulas). Used whenever pallet rows
-    are present, and for the combined export. Colours bucket rows amber."""
+                         column_order=None, all_country_maut=None,
+                         pallet_overrides=None, pallet_maut_table=None,
+                         gbp_to_eur=None):
+    """Write a matrix with every calculated cell (FUEL/MAUT/TOLL/ADMIN/
+    RATE_BASE2.0/TOTAL_PRICE) as a live formula referencing the Variables
+    sheet's comprehensive, every-country block — so editing any assumption
+    by hand recalculates every row that depends on it. Only the raw inputs
+    (RATE_BASE, weights, parcel counts, ...) stay literal values. Used
+    whenever pallet rows are present, and for the combined export. Colours
+    bucket rows amber."""
     from openpyxl import Workbook
     from openpyxl.styles import PatternFill
     vl    = variables_layout or VARIABLES_LAYOUT
+    vl, lookup = _build_all_country_variables(
+        vl, all_country_maut, pallet_overrides, pallet_maut_table, gbp_to_eur)
     order = column_order or (PALLET_COLUMN_ORDER
                              if 'MOBILITY' in df.columns else COLUMN_ORDER)
+    is_pallet_sheet = 'MOBILITY' in order
     wb = Workbook()
     ws = wb.active
     ws.title = f"{_iso3(country_cfg.get('iso2', 'ALL'))} Matrix"
@@ -2316,42 +2460,79 @@ def write_matrix_numeric(df, output_path, country_cfg, variables_layout=None,
         ws.cell(1, ci, col)
     df = df.copy()
     if 'COUNTRYISO2' in df.columns:
+        df['_ISO2'] = df['COUNTRYISO2']
         df['COUNTRYISO2'] = df['COUNTRYISO2'].map(_iso3)
-    if 'RATE_BASE' in df.columns:
-        df['RATE_BASE2.0'] = df['RATE_BASE']
     df_sorted = df.sort_values('TOTAL_PRICE', kind='stable').reset_index(drop=True)
     fill = PatternFill('solid', fgColor='FFF2CC')
 
-    # TOTAL_PRICE is the one live formula in this otherwise-numeric sheet: a
-    # plain in-row SUM over RATE_BASE2.0 through the last surcharge column, so
-    # editing any of those cells by hand recalculates it. Everything else
-    # (including RATE_BASE2.0 itself) stays a literal value.
     L = _letter_map(order)
+    rb2_letter = L.get('RATE_BASE2.0')
     sum_start = sum_end = None
-    if 'RATE_BASE2.0' in order and 'TOTAL_PRICE' in order:
+    if rb2_letter and 'TOTAL_PRICE' in order:
         tp_idx = order.index('TOTAL_PRICE')
         if tp_idx > 0:
-            sum_start = L['RATE_BASE2.0']
+            sum_start = rb2_letter
             sum_end   = L[order[tp_idx - 1]]
 
+    fuel_rows = {cid: _find_var_row(vl, name) for cid, name in _FUEL_VAR_NAME.items()}
+    r_fuel_pallet = _find_var_row(vl, 'FUEL DHL PALLET')
+    r_mobility    = _find_var_row(vl, 'MOBILITY PALLET')
+    r_admin       = _find_var_row(vl, 'ADMIN PALLET')
+
     for ri, rec in enumerate(df_sorted.to_dict('records'), start=2):
+        carrier   = rec.get('CARRIER_ID')
+        iso       = rec.get('_ISO2')
         is_bucket = bool(rec.get('_is_bucket'))
+        is_pallet = is_pallet_sheet and carrier == 'DHL-FENDER'
         # A sentinel catch-all bucket (no rate components) keeps its literal
-        # TOTAL_PRICE; a SUM formula over blank cells would collapse it to 0.
+        # TOTAL_PRICE; a SUM/formula over blank cells would collapse it to 0.
         sentinel = is_bucket and pd.isna(rec.get('RATE_BASE'))
+        formulas = {}
+
+        if not sentinel and rb2_letter:
+            if carrier == 'UPSGB' and lookup.get('gbp_eur'):
+                formulas['RATE_BASE2.0'] = f"={L['RATE_BASE']}{ri}*Variables!$B${lookup['gbp_eur']}"
+            else:
+                formulas['RATE_BASE2.0'] = f"={L['RATE_BASE']}{ri}"
+
+        if not sentinel and is_pallet:
+            if r_fuel_pallet and 'FUEL' in order:
+                formulas['FUEL'] = f"=Variables!$B${r_fuel_pallet}*{rb2_letter}{ri}"
+            if r_mobility and 'MOBILITY' in order:
+                formulas['MOBILITY'] = f"=Variables!$B${r_mobility}*{rb2_letter}{ri}"
+            maut_row = lookup.get('maut_pallet', {}).get(iso)
+            if maut_row and 'MAUT' in order:
+                low, high, tier = (pallet_maut_table or PALLET_MAUT).get(iso, (0.0, 0.0, 2500))
+                mw = rec.get('MAX_WEIGHT')
+                col_letter = 'C' if (mw is not None and not pd.isna(mw) and mw > tier) else 'B'
+                formulas['MAUT'] = f"=Variables!${col_letter}${maut_row}*{rb2_letter}{ri}"
+            toll_row = lookup.get('toll_pallet', {}).get(iso)
+            if toll_row and 'TOLL' in order:
+                formulas['TOLL'] = f"=Variables!$B${toll_row}*{rb2_letter}{ri}"
+            if r_admin and 'ADMIN' in order:
+                formulas['ADMIN'] = f"=Variables!$B${r_admin}"
+        elif not sentinel:
+            fuel_row = fuel_rows.get(carrier)
+            if fuel_row and 'FUEL' in order:
+                formulas['FUEL'] = f"=Variables!$B${fuel_row}*{rb2_letter}{ri}"
+            maut_key = {'DPD': 'maut_dpd', 'DHL-ROS': 'maut_dhlros'}.get(carrier)
+            maut_row = lookup.get(maut_key, {}).get(iso) if maut_key else None
+            if maut_row and 'MAUT' in order:
+                formulas['MAUT'] = f"=Variables!$B${maut_row}*{rb2_letter}{ri}"
+
+        if not sentinel and sum_start:
+            formulas['TOTAL_PRICE'] = f"=SUM({sum_start}{ri}:{sum_end}{ri})"
+
         for ci, col in enumerate(order, 1):
-            if col == 'TOTAL_PRICE' and sum_start and not sentinel:
-                cell = ws.cell(ri, ci, f"=SUM({sum_start}{ri}:{sum_end}{ri})")
+            if col in formulas:
+                cell = ws.cell(ri, ci, formulas[col])
             else:
                 v = rec.get(col)
                 cell = ws.cell(ri, ci, None if (v is None or (isinstance(v, float) and pd.isna(v))) else v)
             if is_bucket:
                 cell.fill = fill
     vs = wb.create_sheet('Variables')
-    for ri, (name, val) in enumerate(vl, 1):
-        vs.cell(ri, 1, name)
-        if val is not None:
-            vs.cell(ri, 2, val)
+    _write_variables_sheet(vs, vl)
     wb.save(output_path)
     log.info('wrote %s (%d rows, numeric)', output_path, len(df_sorted))
 
@@ -2359,7 +2540,8 @@ def write_matrix_numeric(df, output_path, country_cfg, variables_layout=None,
 def write_combined_matrix(frames, output_path, variables_layout=None,
                           pallet_maut=None, pallet_defaults=None,
                           carrier_defaults=None, formulas=True,
-                          pallet_overrides=None):
+                          pallet_overrides=None, all_country_maut=None,
+                          gbp_to_eur=None):
     """Merge every country's minimal frame into ONE sheet, sorted by country then
     price. With formulas=True (default) the sheet uses live Variables formulas;
     per-country pallet MAUT cells are written into the Variables sheet. `frames`
@@ -2375,10 +2557,16 @@ def write_combined_matrix(frames, output_path, variables_layout=None,
         write_matrix_with_formulas(combined, output_path, {'iso2': 'ALL'},
                                    carrier_defaults, variables_layout,
                                    pallet_maut, pallet_defaults, column_order=order,
-                                   pallet_overrides=pallet_overrides)
+                                   pallet_overrides=pallet_overrides,
+                                   all_country_maut=all_country_maut,
+                                   gbp_to_eur=gbp_to_eur)
     else:
         write_matrix_numeric(combined, output_path, {'iso2': 'ALL'},
-                             variables_layout, column_order=order)
+                             variables_layout, column_order=order,
+                             all_country_maut=all_country_maut,
+                             pallet_overrides=pallet_overrides,
+                             pallet_maut_table=pallet_maut,
+                             gbp_to_eur=gbp_to_eur)
     return str(output_path)
 
 
@@ -2408,18 +2596,33 @@ def _letter_map(column_order):
 
 def _ensure_var(vars_rows, name, default):
     """Return (vars_rows, row_index_1based) ensuring `name` exists in the layout."""
-    for i, (n, _v) in enumerate(vars_rows):
-        if n == name:
+    for i, row in enumerate(vars_rows):
+        if row[0] == name:
             return vars_rows, i + 1
     vars_rows = list(vars_rows) + [(name, default)]
     return vars_rows, len(vars_rows)
 
 
+def _write_variables_sheet(vs, rows):
+    """Write Variables rows of any width — (name, val) or (name, low, high, tier) —
+    one row per tuple, name in column A, remaining values in B, C, D, ..."""
+    for ri, row in enumerate(rows, 1):
+        vs.cell(ri, 1, row[0])
+        for ci, v in enumerate(row[1:], 2):
+            if v is not None:
+                vs.cell(ri, ci, v)
+
+
 def write_matrix_with_formulas(df, output_path, country_cfg,
                                carrier_defaults=None, variables_layout=None,
                                pallet_maut=None, pallet_defaults=None,
-                               column_order=None, pallet_overrides=None):
-    """Write a pallet-inclusive matrix with live formulas referencing Variables."""
+                               column_order=None, pallet_overrides=None,
+                               all_country_maut=None, gbp_to_eur=None):
+    """Write a pallet-inclusive matrix with live formulas referencing Variables.
+    Every calculated cell (FUEL/MOBILITY/MAUT/TOLL/ADMIN/RATE_BASE2.0/
+    TOTAL_PRICE) is a formula referencing the Variables sheet's comprehensive,
+    every-country block, so editing any assumption by hand recalculates
+    every row that depends on it."""
     from openpyxl import Workbook
     from openpyxl.styles import PatternFill
 
@@ -2429,34 +2632,18 @@ def write_matrix_with_formulas(df, output_path, country_cfg,
     order = column_order or PALLET_COLUMN_ORDER
     L     = _letter_map(order)
 
-    # TOLL UK PALLET is a single Variables cell shared by every pallet row in
-    # the sheet (GB is the only country with a nonzero toll in this contract).
-    # It must reflect GB's per-country override, not the generic 0% default —
-    # otherwise the formula recomputes to 0 for GB as soon as Excel opens it,
-    # even though the numeric value baked in at build time was correct.
-    ov_table  = pallet_overrides or PALLET_COUNTRY_OVERRIDES
-    toll_pct  = ov_table.get('GB', {}).get('toll_pct', pdef.get('toll_pct', 0.0043))
-
     vars_rows = list(variables_layout or VARIABLES_LAYOUT)
     # Ensure the pallet global cells exist and capture their Variables rows.
     vars_rows, r_fuel  = _ensure_var(vars_rows, 'FUEL DHL PALLET', pdef['fuel_pct'])
     vars_rows, r_mob   = _ensure_var(vars_rows, 'MOBILITY PALLET', pdef['mobility_pct'])
-    vars_rows, r_toll  = _ensure_var(vars_rows, 'TOLL UK PALLET', toll_pct)
     vars_rows, r_admin = _ensure_var(vars_rows, 'ADMIN PALLET', pdef['admin_per_shipment'])
 
-    # Per-country pallet MAUT block: name | low(B) | high(C) | tier(D)
-    # Compute the Variables rows up-front so row formulas can reference them.
-    pallet_countries = sorted(
-        set(df.loc[df['CARRIER_ID'] == 'DHL-FENDER', 'COUNTRYISO2'].dropna())
-    ) if 'CARRIER_ID' in df.columns else []
-    maut_row = {}        # iso -> Variables row (1-based)
-    maut_header_row = None
-    if pallet_countries:
-        maut_header_row = len(vars_rows) + 2         # one spacer row after globals
-        cur = maut_header_row + 1
-        for iso in pallet_countries:
-            maut_row[iso] = cur
-            cur += 1
+    # Comprehensive every-country block: GBP->EUR, MAUT DPD/DHL-ROS per
+    # country, pallet TOLL per country, pallet MAUT (low/high/tier) per
+    # country — same layout regardless of which country this file covers.
+    vars_rows, lookup = _build_all_country_variables(
+        vars_rows, all_country_maut, pallet_overrides, mt, gbp_to_eur)
+    fuel_rows = {cid: _find_var_row(vars_rows, name) for cid, name in _FUEL_VAR_NAME.items()}
 
     # write Variables sheet
     wb = Workbook()
@@ -2484,6 +2671,7 @@ def write_matrix_with_formulas(df, output_path, country_cfg,
 
     for ri, rec in enumerate(df_sorted.to_dict('records'), start=2):
         carrier   = rec.get('CARRIER_ID')
+        iso       = rec.get('COUNTRYISO2')
         is_bucket = bool(rec.get('_is_bucket'))
         is_pallet = (carrier == 'DHL-FENDER')
         # Sentinel catch-all bucket (no rate components): keep its literal price.
@@ -2492,28 +2680,30 @@ def write_matrix_with_formulas(df, output_path, country_cfg,
 
         if sentinel:
             pass
+        elif carrier == 'UPSGB' and lookup.get('gbp_eur'):
+            formulas['RATE_BASE2.0'] = f"={L_RATE}{ri}*Variables!$B${lookup['gbp_eur']}"
         else:
             formulas['RATE_BASE2.0'] = f"={L_RATE}{ri}"
+        rb2 = L['RATE_BASE2.0']
 
         if sentinel:
             pass
         elif is_pallet:
-            iso = rec.get('COUNTRYISO2')
-            formulas['FUEL']     = f"=Variables!$B${r_fuel}*{L_RATE}{ri}"
-            formulas['MOBILITY'] = f"=Variables!$B${r_mob}*{L_RATE}{ri}"
+            formulas['FUEL']     = f"=Variables!$B${r_fuel}*{rb2}{ri}"
+            formulas['MOBILITY'] = f"=Variables!$B${r_mob}*{rb2}{ri}"
             # two-tier MAUT: pick low/high by this row's band vs the country tier
             low, high, tier = mt.get(iso, (0.0, 0.0, 2500))
             mw = rec.get('MAX_WEIGHT')
-            r_iso = maut_row.get(iso)
+            r_iso = lookup.get('maut_pallet', {}).get(iso)
             col = 'C' if (mw is not None and not pd.isna(mw) and mw > tier) else 'B'
-            formulas['MAUT'] = f"=Variables!${col}${r_iso}*{L_RATE}{ri}"
-            # TOLL: GB carries it; others 0 (still summed)
-            if L_TOLL:
-                if (rec.get('TOLL') or 0) > 0:
-                    formulas['TOLL'] = f"=Variables!$B${r_toll}*{L_RATE}{ri}"
+            if r_iso:
+                formulas['MAUT'] = f"=Variables!${col}${r_iso}*{rb2}{ri}"
+            r_toll = lookup.get('toll_pallet', {}).get(iso)
+            if L_TOLL and r_toll:
+                formulas['TOLL'] = f"=Variables!$B${r_toll}*{rb2}{ri}"
             if L_ADMIN:
                 formulas['ADMIN'] = f"=Variables!$B${r_admin}"
-            parts = [f"{L_RATE}{ri}"]
+            parts = [f"{rb2}{ri}"]
             if L_EXTRA: parts.append(f"{L_EXTRA}{ri}")
             if L_MOB:   parts.append(f"{L_MOB}{ri}")
             parts.append(f"{L_FUEL}{ri}")
@@ -2529,13 +2719,20 @@ def write_matrix_with_formulas(df, output_path, country_cfg,
                 formulas['MAX_WEIGHT'] = f"={L_MP}{ri}*{L_EW}{ri}"
                 if L_MV: formulas['MAX_VOLUME']  = f"={L_MW}{ri}/{cfg.get('volume_divisor', 1)}"
                 if L_EV: formulas['EACH_VOLUME'] = f"={L_EW}{ri}/{cfg.get('volume_divisor', 1)}"
-            if cfg.get('fuel_variables_ref'):
+            fuel_row = fuel_rows.get(carrier)
+            if fuel_row:
+                formulas['FUEL'] = f"=Variables!$B${fuel_row}*{rb2}{ri}"
+            elif cfg.get('fuel_variables_ref'):
                 ref = cfg['fuel_variables_ref']
-                formulas['FUEL'] = f"=Variables!${ref[0]}${ref[1:]}*{L_RATE}{ri}"
-            if cfg.get('maut_variables_ref'):
+                formulas['FUEL'] = f"=Variables!${ref[0]}${ref[1:]}*{rb2}{ri}"
+            maut_key = {'DPD': 'maut_dpd', 'DHL-ROS': 'maut_dhlros'}.get(carrier)
+            maut_r = lookup.get(maut_key, {}).get(iso) if maut_key else None
+            if maut_r:
+                formulas['MAUT'] = f"=Variables!$B${maut_r}*{rb2}{ri}"
+            elif cfg.get('maut_variables_ref'):
                 ref = cfg['maut_variables_ref']
-                formulas['MAUT'] = f"=Variables!${ref[0]}${ref[1:]}*{L_RATE}{ri}"
-            parts = [f"{L_RATE}{ri}"]
+                formulas['MAUT'] = f"=Variables!${ref[0]}${ref[1:]}*{rb2}{ri}"
+            parts = [f"{rb2}{ri}"]
             if L_EXTRA: parts.append(f"{L_EXTRA}{ri}")
             parts.append(f"{L_FUEL}{ri}")
             parts.append(f"{L_MAUT}{ri}")
@@ -2555,20 +2752,7 @@ def write_matrix_with_formulas(df, output_path, country_cfg,
 
     # ── Variables sheet ──────────────────────────────────────────────────────
     vs = wb.create_sheet('Variables')
-    for r_i, (name, val) in enumerate(vars_rows, 1):
-        vs.cell(r_i, 1, name)
-        if val is not None:
-            vs.cell(r_i, 2, val)
-    # MAUT block with low(B)/high(C)/tier(D) at the rows reserved earlier
-    if pallet_countries:
-        vs.cell(maut_header_row, 1, 'MAUT DHL PALLET — low(B) / high(C) / tier kg(D)')
-        for iso in pallet_countries:
-            low, high, tier = mt.get(iso, (0.0, 0.0, 2500))
-            r = maut_row[iso]
-            vs.cell(r, 1, f'MAUT DHL PALLET {_iso3(iso)}')
-            vs.cell(r, 2, low)
-            vs.cell(r, 3, high)
-            vs.cell(r, 4, tier)
+    _write_variables_sheet(vs, vars_rows)
 
     wb.save(output_path)
     log.info('wrote %s (%d rows, formulas)', output_path, len(df_sorted))
