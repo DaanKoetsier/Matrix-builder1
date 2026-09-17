@@ -2373,6 +2373,27 @@ def _pallet_maut_for(country, maut_table):
     return maut_table.get(country.upper())    # None -> unknown, caller warns
 
 
+def _expand_single_letter_zip_map(zip_rate_map):
+    """Same fix as _expand_single_letter_postcodes, but for the pallet side:
+    a {zip_prefix: {ceiling_kg: rate}} map instead of a flat postcode list.
+    CargoWrite only matches the first two characters of an order's postcode,
+    so a single-letter UK postcode area (B, E, G, L, M, N, S, W) stored as
+    just that letter never matches an order like 'B19 ...'. Each single-
+    letter key's rate table is duplicated across the 9 two-character codes
+    (digit 1-9) CargoWrite actually looks up — there's no finer-grained
+    source data, so every one of the 9 shares the area's one rate table.
+    Every other key (already 2+ characters) is left untouched."""
+    out = {}
+    for zkey, band_map in zip_rate_map.items():
+        z = str(zkey).strip()
+        if len(z) == 1 and z.isalpha():
+            for d in '123456789':
+                out[f'{z}{d}'] = band_map
+        else:
+            out[zkey] = band_map
+    return out
+
+
 def build_pallet_df(country, zip_rate_map, band_ceilings,
                     pallet_defaults=None, pallet_overrides=None,
                     pallet_maut=None):
@@ -2381,6 +2402,7 @@ def build_pallet_df(country, zip_rate_map, band_ceilings,
     zip_rate_map : {zip_prefix(str): {ceiling_kg(int): factored_rate}}
     band_ceilings: ordered list of band ceilings (kg)
     """
+    zip_rate_map = _expand_single_letter_zip_map(zip_rate_map)
     pd_def = (pallet_defaults or PALLET_DEFAULTS)['DHL-FENDER']
     ov     = (pallet_overrides or PALLET_COUNTRY_OVERRIDES).get(country.upper(), {})
     mt     = pallet_maut or PALLET_MAUT
