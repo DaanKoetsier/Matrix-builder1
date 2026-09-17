@@ -2411,7 +2411,7 @@ def build_pallet_df(country, zip_rate_map, band_ceilings,
                 'MAX_WEIGHT': ceil, 'MIN_VOLUME': None, 'MAX_VOLUME': None,
                 'MIN_PARCEL': None, 'MAX_PARCEL': None,
                 'EACH_WEIGHT': None, 'EACH_VOLUME': None,
-                'FACTORED RATE PALLET': rate_base,
+                'FACTORED RATE PALLET': rate,
                 'USER_DEF_TYPE_1': None, 'USER_DEF_TYPE_2': None,
                 'USER_DEF_TYPE_4': None, 'AWKWARD': None,
                 'RATE_BASE': rate_base, 'RATE_EXTRA': 0,
@@ -2449,7 +2449,9 @@ def _align_columns(frames):
         return pd.DataFrame()
     has_pallet = any('MOBILITY' in f.columns for f in frames)
     order = PALLET_COLUMN_ORDER if has_pallet else COLUMN_ORDER
-    cols = list(order) + (['_is_bucket'] if any('_is_bucket' in f.columns for f in frames) else [])
+    cols = (list(order)
+            + (['_is_bucket'] if any('_is_bucket' in f.columns for f in frames) else [])
+            + (['FACTORED RATE PALLET'] if any('FACTORED RATE PALLET' in f.columns for f in frames) else []))
     out = []
     for f in frames:
         g = f.copy()
@@ -2523,6 +2525,7 @@ def write_matrix_numeric(df, output_path, country_cfg, variables_layout=None,
     r_fuel_pallet = _find_var_row(vl, 'FUEL DHL PALLET')
     r_mobility    = _find_var_row(vl, 'MOBILITY PALLET')
     r_admin       = _find_var_row(vl, 'ADMIN PALLET')
+    r_factor      = _find_var_row(vl, 'FACTOR DHL')
 
     for ri, rec in enumerate(df_sorted.to_dict('records'), start=2):
         carrier   = rec.get('CARRIER_ID')
@@ -2535,10 +2538,14 @@ def write_matrix_numeric(df, output_path, country_cfg, variables_layout=None,
         formulas = {}
 
         if not sentinel:
-            raw_rate = rec.get('RATE_BASE')
-            if (carrier == 'UPSGB' and lookup.get('gbp_eur')
-                    and raw_rate is not None and not pd.isna(raw_rate)):
-                formulas['RATE_BASE'] = f"={float(raw_rate)}*Variables!$B${lookup['gbp_eur']}"
+            if carrier == 'UPSGB' and lookup.get('gbp_eur'):
+                raw_rate = rec.get('RATE_BASE')
+                if raw_rate is not None and not pd.isna(raw_rate):
+                    formulas['RATE_BASE'] = f"={float(raw_rate)}*Variables!$B${lookup['gbp_eur']}"
+            elif carrier == 'DHL-FENDER' and r_factor:
+                raw_rate = rec.get('FACTORED RATE PALLET')
+                if raw_rate is not None and not pd.isna(raw_rate):
+                    formulas['RATE_BASE'] = f"={float(raw_rate)}/Variables!$B${r_factor}"
             if rb2_letter:
                 formulas['RATE_BASE2.0'] = f"={L['RATE_BASE']}{ri}"
 
@@ -2683,9 +2690,10 @@ def write_matrix_with_formulas(df, output_path, country_cfg,
 
     vars_rows = list(variables_layout or VARIABLES_LAYOUT)
     # Ensure the pallet global cells exist and capture their Variables rows.
-    vars_rows, r_fuel  = _ensure_var(vars_rows, 'FUEL DHL PALLET', pdef['fuel_pct'])
-    vars_rows, r_mob   = _ensure_var(vars_rows, 'MOBILITY PALLET', pdef['mobility_pct'])
-    vars_rows, r_admin = _ensure_var(vars_rows, 'ADMIN PALLET', pdef['admin_per_shipment'])
+    vars_rows, r_fuel   = _ensure_var(vars_rows, 'FUEL DHL PALLET', pdef['fuel_pct'])
+    vars_rows, r_mob    = _ensure_var(vars_rows, 'MOBILITY PALLET', pdef['mobility_pct'])
+    vars_rows, r_admin  = _ensure_var(vars_rows, 'ADMIN PALLET', pdef['admin_per_shipment'])
+    vars_rows, r_factor = _ensure_var(vars_rows, 'FACTOR DHL', pdef['factor'])
 
     # Comprehensive every-country block: GBP->EUR, MAUT DPD/DHL-ROS per
     # country, pallet TOLL per country, pallet MAUT (low/high/tier) per
@@ -2729,10 +2737,14 @@ def write_matrix_with_formulas(df, output_path, country_cfg,
         formulas = {}
 
         if not sentinel:
-            raw_rate = rec.get('RATE_BASE')
-            if (carrier == 'UPSGB' and lookup.get('gbp_eur')
-                    and raw_rate is not None and not pd.isna(raw_rate)):
-                formulas['RATE_BASE'] = f"={float(raw_rate)}*Variables!$B${lookup['gbp_eur']}"
+            if carrier == 'UPSGB' and lookup.get('gbp_eur'):
+                raw_rate = rec.get('RATE_BASE')
+                if raw_rate is not None and not pd.isna(raw_rate):
+                    formulas['RATE_BASE'] = f"={float(raw_rate)}*Variables!$B${lookup['gbp_eur']}"
+            elif carrier == 'DHL-FENDER' and r_factor:
+                raw_rate = rec.get('FACTORED RATE PALLET')
+                if raw_rate is not None and not pd.isna(raw_rate):
+                    formulas['RATE_BASE'] = f"={float(raw_rate)}/Variables!$B${r_factor}"
             formulas['RATE_BASE2.0'] = f"={L_RATE}{ri}"
         rb2 = L['RATE_BASE2.0']
 
