@@ -280,9 +280,8 @@ def heavy_rules_from_editor(edited_df):
 
 def _default_pallet_maut_df():
     rows = []
-    for iso, (low, high, tier) in pl.PALLET_MAUT.items():
-        rows.append({'Country': iso, 'MAUT % (≤ tier)': low,
-                     'MAUT % (> tier)': high, 'Tier kg': tier})
+    for iso, pct in pl.PALLET_MAUT.items():
+        rows.append({'Country': iso, 'MAUT %': pct})
     return pd.DataFrame(rows)
 
 
@@ -293,12 +292,10 @@ def pallet_maut_from_editor(edited_df):
         if not iso:
             continue
         try:
-            low  = float(row.get('MAUT % (≤ tier)') or 0)
-            high = float(row.get('MAUT % (> tier)') or 0)
-            tier = float(row.get('Tier kg') or 2500)
+            pct = float(row.get('MAUT %') or 0)
         except (TypeError, ValueError):
             continue
-        table[iso] = (low, high, tier)
+        table[iso] = pct
     return table
 
 
@@ -462,8 +459,8 @@ with st.sidebar:
 
         st.markdown('<p class="section-title">Pallet MAUT (% of rate)</p>',
                     unsafe_allow_html=True)
-        st.caption("Per country. Low = ≤ tier kg, high = above. Add a row for any "
-                   "new country — unlisted countries get 0 MAUT (with a warning).")
+        st.caption("Per country, one percentage. Add a row for any new country — "
+                   "unlisted countries get 0 MAUT (with a warning).")
         if 'pallet_maut_df' not in st.session_state:
             st.session_state.pallet_maut_df = _default_pallet_maut_df()
         _maut_edit = st.data_editor(
@@ -471,9 +468,7 @@ with st.sidebar:
             use_container_width=True, hide_index=True,
             column_config={
                 'Country': st.column_config.TextColumn(width="small"),
-                'MAUT % (≤ tier)': st.column_config.NumberColumn(format="%.4f"),
-                'MAUT % (> tier)': st.column_config.NumberColumn(format="%.4f"),
-                'Tier kg': st.column_config.NumberColumn(format="%d"),
+                'MAUT %': st.column_config.NumberColumn(format="%.4f"),
             }, key='pallet_maut_editor')
         st.session_state.pallet_maut_df = _maut_edit
         pallet_maut_table = pallet_maut_from_editor(_maut_edit)
