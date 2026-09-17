@@ -1847,6 +1847,24 @@ COUNTRY_ISLAND_ONLY_CARRIERS = {
 }
 
 
+def _expand_single_letter_postcodes(codes):
+    """CargoWrite only ever matches the first TWO characters of an order's
+    postcode. A single-letter UK postcode area (B, E, G, L, M, N, S, W —
+    Birmingham, East London, Glasgow, Liverpool, Manchester, North London,
+    Sheffield, West London) stored as just that one letter never matches an
+    order like 'B19 ...', since CargoWrite reads 'B1', not 'B'. Expand each
+    single-letter code into the 9 two-character codes (digit 1-9) CargoWrite
+    actually looks up. Every other code (already 2+ characters, i.e. every
+    other UK area) is left untouched."""
+    out = []
+    for c in codes:
+        if len(c) == 1 and c.isalpha():
+            out.extend(f'{c}{d}' for d in '123456789')
+        else:
+            out.append(c)
+    return out
+
+
 def explode_parcel_postcodes(df, postcodes, exclusive=None, restrict_carriers=None):
     """Replicate each blank-POSTCODE parcel row once per postcode prefix.
 
@@ -1865,6 +1883,7 @@ def explode_parcel_postcodes(df, postcodes, exclusive=None, restrict_carriers=No
     if df is None or df.empty:
         return df, 0
     codes = [str(p).strip() for p in (postcodes or []) if str(p).strip() != '']
+    codes = _expand_single_letter_postcodes(codes)
     is_parcel = df['CARRIER_ID'].astype(str) != 'DHL-FENDER'
     pc = df['POSTCODE']
     blank = pc.isna() | (pc.astype(str).str.strip().isin(['', 'None', 'nan']))
