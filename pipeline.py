@@ -1836,8 +1836,15 @@ def optimize_globally_df(df):
 # only. These codes are removed from every other carrier's exploded postcode
 # list and always added to the named carrier's, even if the pallet file's
 # postcode list for that country doesn't otherwise include them.
+#
+# WC2H 8LP and SY1 1PN are two separate, specific full-postcode exceptions:
+# UPSGB only, parcels only, never pallets. build_pallet_df() already skips
+# any code listed here when building DHL-FENDER rows, so listing them
+# excludes just these two exact addresses from pallets; every other WC/SY
+# address is untouched.
 COUNTRY_EXCLUSIVE_POSTCODES = {
-    'GB': {'BT': 'UPSNL', 'GY': 'UPSNL', 'IM': 'UPSNL', 'JE': 'UPSNL'},
+    'GB': {'BT': 'UPSNL', 'GY': 'UPSNL', 'IM': 'UPSNL', 'JE': 'UPSNL',
+           'WC2H 8LP': 'UPSGB', 'SY1 1PN': 'UPSGB'},
 }
 
 # Carriers that must NOT get the country's general postcode list at all — only
