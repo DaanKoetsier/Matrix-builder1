@@ -1291,7 +1291,8 @@ def write_matrix_excel(df, output_path, country_cfg,
                        pallet_maut_table=None, gbp_to_eur=None):
     vl  = variables_layout or VARIABLES_LAYOUT
     vl, lookup = _build_all_country_variables(
-        vl, all_country_maut, pallet_overrides, pallet_maut_table, gbp_to_eur)
+        vl, all_country_maut, pallet_overrides, pallet_maut_table, gbp_to_eur,
+        only_country=country_cfg['iso2'])
     wb  = Workbook()
     ws  = wb.active
     ws.title = f"{_iso3(country_cfg['iso2'])} Matrix"
@@ -2259,7 +2260,6 @@ PALLET_COUNTRY_OVERRIDES = {
     'DE': {'toll_pct': 0.0065},
 }
 
-# Per-country MAUT as a % of RATE_BASE, with an optional 2nd tier above a weight
 # Per-country MAUT as a single % of RATE_BASE (no weight-band tiering).
 # Source: DSV pallet MAUT list (S2026); DE/IT/FR confirmed directly by the
 # client. Countries absent here default to 0 MAUT and raise a warning (never
@@ -2276,12 +2276,19 @@ PALLET_MAUT.update({iso: 0.0 for iso in
 
 def _build_all_country_variables(vars_rows, all_country_maut=None,
                                  pallet_overrides=None, pallet_maut_table=None,
-                                 gbp_to_eur=None):
-    """Extend a Variables-sheet row list with a comprehensive, every-country
-    reference block, so the SAME Variables page — every country, every
-    metric — appears in every generated file regardless of which country
-    that file's own rows are for. The client edits any cell here and the
-    rows that reference it recalculate.
+                                 gbp_to_eur=None, only_country=None):
+    """Extend a Variables-sheet row list with a per-country reference block.
+
+    By default (`only_country=None`) this covers EVERY country, so the same
+    Variables page appears in every generated file regardless of which
+    country that file's own rows are for — used for the combined "ALL
+    Matrix" export, which genuinely spans every country at once.
+
+    When `only_country` is given (a single-country export), the block is
+    restricted to that one country's row per metric — the single-country
+    files don't need the other ~35 countries' data, and it keeps the sheet
+    short and unambiguous. The client edits any cell here and the rows that
+    reference it recalculate either way.
 
     Returns (vars_rows, lookup):
       lookup = {
@@ -2304,8 +2311,11 @@ def _build_all_country_variables(vars_rows, all_country_maut=None,
     vars_rows.append(('GBP TO EUR', gbp_to_eur))
     lookup['gbp_eur'] = len(vars_rows)
 
-    countries = sorted(set(all_country_maut) | set(pallet_overrides)
-                       | set(pallet_maut_table))
+    if only_country:
+        countries = [only_country.upper()]
+    else:
+        countries = sorted(set(all_country_maut) | set(pallet_overrides)
+                           | set(pallet_maut_table))
 
     lookup['maut_dpd'] = {}
     if countries:
@@ -2695,11 +2705,13 @@ def write_matrix_with_formulas(df, output_path, country_cfg,
     vars_rows, r_admin  = _ensure_var(vars_rows, 'ADMIN PALLET', pdef['admin_per_shipment'])
     vars_rows, r_factor = _ensure_var(vars_rows, 'FACTOR DHL', pdef['factor'])
 
-    # Comprehensive every-country block: GBP->EUR, MAUT DPD/DHL-ROS per
-    # country, pallet TOLL per country, pallet MAUT (low/high/tier) per
-    # country — same layout regardless of which country this file covers.
+    # Comprehensive country block: every country for the combined "ALL Matrix"
+    # export (iso2='ALL'); just this file's own country otherwise.
+    iso2 = country_cfg.get('iso2', 'ALL')
+    only_country = None if str(iso2).upper() == 'ALL' else iso2
     vars_rows, lookup = _build_all_country_variables(
-        vars_rows, all_country_maut, pallet_overrides, mt, gbp_to_eur)
+        vars_rows, all_country_maut, pallet_overrides, mt, gbp_to_eur,
+        only_country=only_country)
     fuel_rows     = {cid: _find_var_row(vars_rows, name) for cid, name in _FUEL_VAR_NAME.items()}
     linehaul_rows = {cid: _find_var_row(vars_rows, name) for cid, name in _LINEHAUL_VAR_NAME.items()}
 
