@@ -1109,7 +1109,7 @@ def build_rows_upswea(rate_data, country_cfg):
     if country in rate_data:
         rate = rate_data[country]
         for mp in range(1, max_p + 1):
-            rows.append({**c0, 'SERVICE_LEVEL': 'World Ship', 'MAX_PARCEL': mp,
+            rows.append({**c0, 'SERVICE_LEVEL': 'WORLD SHIP', 'MAX_PARCEL': mp,
                          'EACH_WEIGHT': 31.5,
                          'RATE_BASE': round(rate * mp, 4)})
     
@@ -1889,6 +1889,11 @@ def explode_parcel_postcodes(df, postcodes, exclusive=None, restrict_carriers=No
     pc = df['POSTCODE']
     blank = pc.isna() | (pc.astype(str).str.strip().isin(['', 'None', 'nan']))
     target = is_parcel & blank
+    if '_is_bucket' in df.columns:
+        # Fixed exception/service-code rows (append_standard_exceptions) and
+        # catch-all buckets carry a blank POSTCODE on purpose — they're a
+        # single literal row per country, never a per-postcode price lookup.
+        target = target & ~df['_is_bucket'].fillna(False).astype(bool)
     if not target.any():
         return df, 0
     if not codes and not exclusive:
@@ -2003,6 +2008,80 @@ def append_euroconnect_buckets(df, site_id='NLMOE01', client_id='NLFENDER'):
         df = df.copy(); df['_is_bucket'] = False
         bucket_df['_is_bucket'] = True
     return pd.concat([df, bucket_df], ignore_index=True)
+
+
+# A fixed, non-priced set of CargoWrite exception/service-code rows appended
+# to the end of every generated matrix, once per country. These carry no rate
+# data (RATE_BASE etc. stay blank, written as sentinel bucket rows) — they
+# exist purely so CargoWrite recognises these specific service codes. GB gets
+# the full, literal set the client provided; every other country repeats only
+# the UPSGB-routed rows (swapped to UPDE, the equivalent NL-origin carrier)
+# plus the DHL-FENDER pallet row when that country's matrix has pallets — the
+# other GB-specific rows (UPSNL SAVERSP188, UPDE SNS, UBGB/UCGB) are GB-only.
+_STANDARD_EXCEPTIONS_GB = [
+    {'CARRIER_ID': 'UPSGB', 'SERVICE_LEVEL': 'STANDARD',
+     'MAX_VOLUME': 0.07, 'MAX_PARCEL': 1, 'EACH_WEIGHT': 31,
+     'USER_DEF_TYPE_4': 'DROPPOINT', 'USER_DEF_TYPE_3': 'AMAZON',
+     'USER_DEF_TYPE_2': 'Parcel', 'USER_DEF_TYPE_1': '1E-13'},
+    {'CARRIER_ID': 'UPSNL', 'SERVICE_LEVEL': 'SAVERSP188',
+     'HAZMAT': 'Y',
+     'USER_DEF_TYPE_4': 'UPNL', 'USER_DEF_TYPE_2': '3481', 'USER_DEF_TYPE_1': '1E-13'},
+    {'CARRIER_ID': 'UPDE SNS', 'SERVICE_LEVEL': 'SAVER',
+     'USER_DEF_TYPE_4': 'FIX', 'USER_DEF_TYPE_2': 'UPSEXP', 'USER_DEF_TYPE_1': '1E-13'},
+    {'CARRIER_ID': 'UPSGB', 'SERVICE_LEVEL': 'STANDARD',
+     'EACH_WEIGHT': 70,
+     'USER_DEF_TYPE_4': 'PRIO', 'USER_DEF_TYPE_3': '5', 'USER_DEF_TYPE_1': '1E-13'},
+    {'CARRIER_ID': 'UBGB', 'SERVICE_LEVEL': 'STANDARD',
+     'USER_DEF_TYPE_4': 'UPSGB', 'USER_DEF_TYPE_2': 'B', 'USER_DEF_TYPE_1': '1E-13'},
+    {'CARRIER_ID': 'UCGB', 'SERVICE_LEVEL': 'STANDARD',
+     'USER_DEF_TYPE_4': 'UPSGB', 'USER_DEF_TYPE_2': 'C', 'USER_DEF_TYPE_1': '1E-13'},
+    {'CARRIER_ID': 'DHL-FENDER', 'SERVICE_LEVEL': 'EUROCONNECT',
+     'USER_DEF_TYPE_4': 'DROPPOINT', 'USER_DEF_TYPE_3': 'AMAZON',
+     'USER_DEF_TYPE_2': 'Parcel', 'USER_DEF_TYPE_1': '1E-13'},
+]
+
+
+def append_standard_exceptions(df, has_pallet, site_id='NLMOE01', client_id='NLFENDER'):
+    """Append the client's fixed CargoWrite exception rows, once per country
+    present in `df`. See _STANDARD_EXCEPTIONS_GB for the GB set and which
+    rows carry over (UPDE-routed) to every other country."""
+    if df is None or df.empty:
+        return df
+    countries = list(dict.fromkeys(df['COUNTRYISO2'].dropna()))
+    if not countries:
+        return df
+    if 'SITE_ID' in df.columns and df['SITE_ID'].notna().any():
+        site_id = df['SITE_ID'].dropna().iloc[0]
+    if 'CLIENT_ID' in df.columns and df['CLIENT_ID'].notna().any():
+        client_id = df['CLIENT_ID'].dropna().iloc[0]
+
+    rows = []
+    for iso in countries:
+        if str(iso).upper() == 'GB':
+            templates = _STANDARD_EXCEPTIONS_GB
+        else:
+            templates = []
+            for t in _STANDARD_EXCEPTIONS_GB:
+                if t['CARRIER_ID'] == 'UPSGB':
+                    templates.append({**t, 'CARRIER_ID': 'UPDE'})
+                elif t['CARRIER_ID'] == 'DHL-FENDER' and has_pallet:
+                    templates.append(t)
+        for t in templates:
+            row = {c: None for c in df.columns}
+            row.update(t)
+            row['SITE_ID'] = site_id
+            row['CLIENT_ID'] = client_id
+            row['COUNTRYISO2'] = iso
+            if '_is_bucket' in df.columns:
+                row['_is_bucket'] = True
+            rows.append(row)
+    if not rows:
+        return df
+    exc_df = pd.DataFrame(rows, columns=df.columns)
+    if '_is_bucket' not in df.columns:
+        df = df.copy(); df['_is_bucket'] = False
+        exc_df['_is_bucket'] = True
+    return pd.concat([df, exc_df], ignore_index=True)
 
 
 def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
@@ -2130,6 +2209,9 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
             ext_all = append_euroconnect_buckets(ext_all)
             opt_all = append_euroconnect_buckets(opt_all)
             min_all = append_euroconnect_buckets(min_all)
+            ext_all = append_standard_exceptions(ext_all, has_pallet=True)
+            opt_all = append_standard_exceptions(opt_all, has_pallet=True)
+            min_all = append_standard_exceptions(min_all, has_pallet=True)
         min_all = _explode_min(min_all)
         write_matrix_with_formulas(ext_all, ext_path, cfg, cd, vl, pallet_maut,
                                    pallet_defaults, pallet_overrides=pallet_overrides,
@@ -2147,6 +2229,9 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
             df_ext_final = append_euroconnect_buckets(df_ext_final)
             df_opt_final = append_euroconnect_buckets(df_opt_final)
             df_min_final = append_euroconnect_buckets(df_min_final)
+            df_ext_final = append_standard_exceptions(df_ext_final, has_pallet=False)
+            df_opt_final = append_standard_exceptions(df_opt_final, has_pallet=False)
+            df_min_final = append_standard_exceptions(df_min_final, has_pallet=False)
         df_min_final = _explode_min(df_min_final)
         write_matrix_excel(df_ext_final, ext_path, cfg, cd, vl,
                            all_country_maut=all_country_maut, pallet_overrides=pallet_overrides,
@@ -2166,6 +2251,9 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
             df     = append_euroconnect_buckets(df)
             df_opt = append_euroconnect_buckets(df_opt)
             df_min = append_euroconnect_buckets(df_min)
+            df     = append_standard_exceptions(df, has_pallet=False)
+            df_opt = append_standard_exceptions(df_opt, has_pallet=False)
+            df_min = append_standard_exceptions(df_min, has_pallet=False)
         write_matrix_excel(df, ext_path, cfg, cd, vl,
                            all_country_maut=all_country_maut, pallet_overrides=pallet_overrides,
                            pallet_maut_table=pallet_maut, gbp_to_eur=gbp_to_eur)
