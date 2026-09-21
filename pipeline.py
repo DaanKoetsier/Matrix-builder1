@@ -158,6 +158,7 @@ COUNTRY_CONFIG = {iso: _default_country_cfg(iso) for iso in [
     'SE', 'DK', 'NO', 'FI',
     'GR', 'HR', 'BG', 'RO', 'SM',
     'EE', 'LV', 'LT', 'LI',
+    'MT', 'CY',
 ]}
 # DE only has three carriers (no UPSNL)
 COUNTRY_CONFIG['DE']['carriers'] = ['UPDE', 'DPD', 'DHL-ROS']
@@ -167,6 +168,13 @@ COUNTRY_CONFIG['GB'] = _default_country_cfg('GB')
 COUNTRY_CONFIG['GB']['carriers'] = ['UPSGB', 'UPSNL']
 COUNTRY_CONFIG['CH']['carriers'] = ['UPSWEA']
 COUNTRY_CONFIG['NO']['carriers'] = ['UPSWEA']
+
+# San Marino, Malta, Cyprus: UPSNL only (the master file has no DPD/DHL-ROS
+# rate data for any of these three, and the client wants UPSNL exclusively
+# rather than falling back to UPDE).
+COUNTRY_CONFIG['SM']['carriers'] = ['UPSNL']
+COUNTRY_CONFIG['MT']['carriers'] = ['UPSNL']
+COUNTRY_CONFIG['CY']['carriers'] = ['UPSNL']
 
 # UPSGB's master-file rates are quoted in GBP (UK domestic contract); every
 # other carrier's rates are already EUR. This is the editable conversion rate
