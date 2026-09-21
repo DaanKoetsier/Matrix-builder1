@@ -2026,13 +2026,11 @@ def append_euroconnect_buckets(df, site_id='NLMOE01', client_id='NLFENDER'):
 
 
 # A fixed, non-priced set of CargoWrite exception/service-code rows appended
-# to the end of every generated matrix, once per country. These carry no rate
-# data (RATE_BASE etc. stay blank, written as sentinel bucket rows) — they
-# exist purely so CargoWrite recognises these specific service codes. GB gets
-# the full, literal set the client provided; every other country repeats only
-# the UPSGB-routed rows (swapped to UPDE, the equivalent NL-origin carrier)
-# plus the DHL-FENDER pallet row when that country's matrix has pallets — the
-# other GB-specific rows (UPSNL SAVERSP188, UPDE SNS, UBGB/UCGB) are GB-only.
+# to the end of the GB matrix ONLY. These carry no rate data (RATE_BASE etc.
+# stay blank, written as sentinel bucket rows) — they exist purely so
+# CargoWrite recognises these specific, GB-only service codes. Confirmed by
+# the client: these must NOT be carried over (e.g. UPDE-routed) to any other
+# country — an earlier version did that and it was a mistake.
 _STANDARD_EXCEPTIONS_GB = [
     {'CARRIER_ID': 'UPSGB', 'SERVICE_LEVEL': 'STANDARD',
      'MAX_VOLUME': 0.07, 'MAX_PARCEL': 1, 'EACH_WEIGHT': 31,
@@ -2057,12 +2055,14 @@ _STANDARD_EXCEPTIONS_GB = [
 
 
 def append_standard_exceptions(df, has_pallet, site_id='NLMOE01', client_id='NLFENDER'):
-    """Append the client's fixed CargoWrite exception rows, once per country
-    present in `df`. See _STANDARD_EXCEPTIONS_GB for the GB set and which
-    rows carry over (UPDE-routed) to every other country."""
+    """Append the client's fixed CargoWrite exception rows for GB only — the
+    client confirmed these are GB-specific service codes and must not be
+    carried over (e.g. UPDE-routed) to any other country. See
+    _STANDARD_EXCEPTIONS_GB for the full row set."""
     if df is None or df.empty:
         return df
-    countries = list(dict.fromkeys(df['COUNTRYISO2'].dropna()))
+    countries = [iso for iso in dict.fromkeys(df['COUNTRYISO2'].dropna())
+                if str(iso).upper() == 'GB']
     if not countries:
         return df
     if 'SITE_ID' in df.columns and df['SITE_ID'].notna().any():
@@ -2072,15 +2072,8 @@ def append_standard_exceptions(df, has_pallet, site_id='NLMOE01', client_id='NLF
 
     rows = []
     for iso in countries:
-        if str(iso).upper() == 'GB':
-            templates = _STANDARD_EXCEPTIONS_GB
-        else:
-            templates = []
-            for t in _STANDARD_EXCEPTIONS_GB:
-                if t['CARRIER_ID'] == 'UPSGB':
-                    templates.append({**t, 'CARRIER_ID': 'UPDE'})
-                elif t['CARRIER_ID'] == 'DHL-FENDER' and has_pallet:
-                    templates.append(t)
+        templates = [t for t in _STANDARD_EXCEPTIONS_GB
+                    if t['CARRIER_ID'] != 'DHL-FENDER' or has_pallet]
         for t in templates:
             row = {c: None for c in df.columns}
             row.update(t)
