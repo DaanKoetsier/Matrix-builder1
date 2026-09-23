@@ -1851,14 +1851,9 @@ def optimize_globally_df(df):
 # excludes just these two exact addresses from pallets; every other WC/SY
 # address is untouched.
 COUNTRY_EXCLUSIVE_POSTCODES = {
-    'GB': {'BT': 'UPSNL', 'GY': 'UPSNL', 'IM': 'UPSNL', 'JE': 'UPSNL'},
+    'GB': {'BT': 'UPSNL', 'GY': 'UPSNL', 'IM': 'UPSNL', 'JE': 'UPSNL',
+           'WC2H 8LP': 'UPSGB', 'SY1 1PN': 'UPSGB'},
 }
-# NOTE: WC2H 8LP / SY1 1PN used to be listed here as UPSGB-exclusive full
-# postcodes, but CargoWrite only ever compares the first TWO characters of
-# an order's postcode against this matrix — 'WC' can never equal the literal
-# string 'WC2H 8LP', so those entries never matched anything (confirmed by
-# the client). Replaced by CLIENT_ID_CARRIER_EXCEPTIONS below, which routes
-# these two orders by a dedicated CLIENT_ID tagged upstream instead.
 
 # Carriers that must NOT get the country's general postcode list at all — only
 # their exclusive codes above. e.g. GB's UPSNL now serves only the islands
@@ -2097,50 +2092,6 @@ def append_standard_exceptions(df, has_pallet, site_id='NLMOE01', client_id='NLF
     return pd.concat([df, exc_df], ignore_index=True)
 
 
-# Some orders can't be routed by postcode at all: CargoWrite only ever
-# compares the first TWO characters of an order's postcode against the
-# matrix, so a specific address like WC2H 8LP is compared as 'WC' — it can
-# never equal the literal string 'WC2H 8LP'. Confirmed by the client:
-# orders for these two addresses are instead tagged upstream (before they
-# reach CargoWrite) with a dedicated CLIENT_ID (WC2 / SY2) in place of the
-# normal NLFENDER. Duplicating a carrier's FULL existing rate/tier set under
-# that CLIENT_ID (rather than one flat bucket row) preserves normal
-# weight-tier pricing, and since no pallet row ever carries CLIENT_ID
-# WC2/SY2, these orders are automatically excluded from DHL-FENDER pallets
-# without any extra logic.
-CLIENT_ID_CARRIER_EXCEPTIONS = {
-    'GB': [
-        {'client_id': 'WC2', 'carrier_id': 'UPSGB'},
-        {'client_id': 'SY2', 'carrier_id': 'UPSGB'},
-    ],
-}
-
-
-def append_client_id_carrier_exceptions(df, country):
-    """Duplicate a carrier's full parcel row set under a dedicated CLIENT_ID
-    for orders CargoWrite can't route by postcode. See
-    CLIENT_ID_CARRIER_EXCEPTIONS above."""
-    rules = CLIENT_ID_CARRIER_EXCEPTIONS.get(country.upper())
-    if not rules or df is None or df.empty:
-        return df
-    is_bucket = (df['_is_bucket'].fillna(False).astype(bool)
-                if '_is_bucket' in df.columns else pd.Series(False, index=df.index))
-    extra = []
-    for rule in rules:
-        base = df[(df['CARRIER_ID'] == rule['carrier_id']) & ~is_bucket]
-        if base.empty:
-            continue
-        dup = base.copy()
-        dup['CLIENT_ID'] = rule['client_id']
-        dup['POSTCODE'] = None
-        if '_is_bucket' in dup.columns:
-            dup['_is_bucket'] = True
-        extra.append(dup)
-    if not extra:
-        return df
-    return pd.concat([df] + extra, ignore_index=True)
-
-
 def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
                              carrier_defaults=None, variables_layout=None,
                              exceptions=None, overflow_rules=None,
@@ -2269,9 +2220,6 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
             ext_all = append_standard_exceptions(ext_all, has_pallet=True)
             opt_all = append_standard_exceptions(opt_all, has_pallet=True)
             min_all = append_standard_exceptions(min_all, has_pallet=True)
-            ext_all = append_client_id_carrier_exceptions(ext_all, country)
-            opt_all = append_client_id_carrier_exceptions(opt_all, country)
-            min_all = append_client_id_carrier_exceptions(min_all, country)
         min_all = _explode_min(min_all)
         write_matrix_with_formulas(ext_all, ext_path, cfg, cd, vl, pallet_maut,
                                    pallet_defaults, pallet_overrides=pallet_overrides,
@@ -2292,9 +2240,6 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
             df_ext_final = append_standard_exceptions(df_ext_final, has_pallet=False)
             df_opt_final = append_standard_exceptions(df_opt_final, has_pallet=False)
             df_min_final = append_standard_exceptions(df_min_final, has_pallet=False)
-            df_ext_final = append_client_id_carrier_exceptions(df_ext_final, country)
-            df_opt_final = append_client_id_carrier_exceptions(df_opt_final, country)
-            df_min_final = append_client_id_carrier_exceptions(df_min_final, country)
         df_min_final = _explode_min(df_min_final)
         write_matrix_excel(df_ext_final, ext_path, cfg, cd, vl,
                            all_country_maut=all_country_maut, pallet_overrides=pallet_overrides,
@@ -2317,9 +2262,6 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
             df     = append_standard_exceptions(df, has_pallet=False)
             df_opt = append_standard_exceptions(df_opt, has_pallet=False)
             df_min = append_standard_exceptions(df_min, has_pallet=False)
-            df     = append_client_id_carrier_exceptions(df, country)
-            df_opt = append_client_id_carrier_exceptions(df_opt, country)
-            df_min = append_client_id_carrier_exceptions(df_min, country)
         write_matrix_excel(df, ext_path, cfg, cd, vl,
                            all_country_maut=all_country_maut, pallet_overrides=pallet_overrides,
                            pallet_maut_table=pallet_maut, gbp_to_eur=gbp_to_eur)
