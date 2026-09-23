@@ -1333,6 +1333,44 @@ def write_matrix_excel(df, output_path, country_cfg,
 
 
 # ==============================================================================
+# 7b. WEIGHT-TIER DISAMBIGUATION
+# ==============================================================================
+
+def disambiguate_weight_tiers(df):
+    """Give every combined-weight tier row group an exclusive MIN_WEIGHT floor.
+
+    build_combined_weight_rows() (used by UPSGB/UPDE/DHL-ROS/etc.) emits one
+    row per reachable band with MIN_WEIGHT left blank — so a light shipment
+    technically satisfies every larger tier's MAX_WEIGHT too, and several rows
+    end up matching the same order with no documented CargoWrite tie-break
+    rule for which one wins (build_rows_dpd's 'klein'/'groot' pair has the
+    same overlap). Setting each tier's MIN_WEIGHT to the previous tier's
+    MAX_WEIGHT makes every row own an exclusive weight slice, so exactly one
+    row ever matches a given shipment weight regardless of how CargoWrite
+    resolves ties.
+    """
+    if df is None or df.empty or 'MAX_WEIGHT' not in df.columns:
+        return df
+    df = df.copy()
+    group_cols = ['CARRIER_ID', 'SERVICE_LEVEL', 'COUNTRYISO2', 'POSTCODE',
+                  'MAX_PARCEL', 'HAZMAT', 'AWKWARD',
+                  'USER_DEF_TYPE_1', 'USER_DEF_TYPE_2',
+                  'USER_DEF_TYPE_3', 'USER_DEF_TYPE_4']
+    group_cols = [c for c in group_cols if c in df.columns]
+    key = df[group_cols].fillna('\0').astype(str).agg('|'.join, axis=1)
+    for _, idxs in df.groupby(key).groups.items():
+        if len(idxs) < 2:
+            continue
+        sub = df.loc[idxs].sort_values('MAX_WEIGHT', kind='stable')
+        prev_max = None
+        for i, max_w in zip(sub.index, sub['MAX_WEIGHT']):
+            if prev_max is not None and pd.isna(df.at[i, 'MIN_WEIGHT']):
+                df.at[i, 'MIN_WEIGHT'] = prev_max
+            prev_max = max_w
+    return df
+
+
+# ==============================================================================
 # 8. FIRST-PASS OPTIMIZER (per carrier/service)
 # ==============================================================================
 
@@ -2121,6 +2159,7 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
     log.info('raw parcel rows: %d', len(df))
     if not df.empty:
         df = compute_numeric_totals(df, cd)
+        df = disambiguate_weight_tiers(df)
 
     # ── Express-only mode ─────────────────────────────────────────────────────
     # Keep only the EXPRESS SAVER service rows: UPDE 'EXPRESS SAVER 7R9W62' and
