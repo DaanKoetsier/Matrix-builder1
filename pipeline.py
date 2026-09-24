@@ -825,7 +825,11 @@ def _upde_service_buckets(rate_data, service_key, country_cfg):
                     and service_key in z), fallback_zid)
         t = tiers_for(zid)
         if t:
-            buckets.append((pc, t))
+            # Zero-padded TEXT, not a bare int: CargoWrite compares the first
+            # two CHARACTERS of an order's postcode, so prefix 8 must be
+            # written as '08' or it never matches an '08...' postcode
+            # (hits Spain/Italy provinces 00-09, e.g. Barcelona=08, Roma=00).
+            buckets.append((f'{pc:02d}', t))
 
     # If all prefixes resolved to the same zone, collapse to no-postcode
     if buckets and len({t_id for _, t_id in
