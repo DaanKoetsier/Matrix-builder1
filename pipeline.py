@@ -2099,11 +2099,13 @@ def append_standard_exceptions(df, has_pallet, site_id='NLMOE01', client_id='NLF
 # two customers' orders are instead identified by CUSTOMER NAME in
 # USER_DEF_TYPE_1 (not CLIENT_ID — that was tried and rejected). Duplicating
 # a carrier's FULL existing rate/tier set under that name (rather than one
-# flat bucket row) preserves normal weight-tier pricing.
+# flat bucket row) preserves normal weight-tier pricing. The postcode is
+# still written into POSTCODE for human readability — CargoWrite matches on
+# USER_DEF_TYPE_1, this is not a second matching key.
 USER_DEF_TYPE_1_CARRIER_EXCEPTIONS = {
     'GB': [
-        {'user_def_type_1': 'Wunjo Guitars', 'carrier_id': 'UPSGB'},      # WC2H 8LP
-        {'user_def_type_1': 'Brunswick Guitars', 'carrier_id': 'UPSGB'},  # SY1 1PN
+        {'user_def_type_1': 'Wunjo Guitars', 'carrier_id': 'UPSGB', 'postcode': 'WC2H 8LP'},
+        {'user_def_type_1': 'Brunswick Guitars', 'carrier_id': 'UPSGB', 'postcode': 'SY1 1PN'},
     ],
 }
 
@@ -2124,9 +2126,7 @@ def append_named_carrier_exceptions(df, country):
             continue
         dup = base.copy()
         dup['USER_DEF_TYPE_1'] = rule['user_def_type_1']
-        dup['POSTCODE'] = None
-        if '_is_bucket' in dup.columns:
-            dup['_is_bucket'] = True
+        dup['POSTCODE'] = rule['postcode']
         extra.append(dup)
     if not extra:
         return df
