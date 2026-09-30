@@ -849,7 +849,7 @@ def _common(site, client, carrier, iso2):
 
 def build_combined_weight_rows(c0, bands, max_parcel, service_level,
                                max_ew=None, postcode=None, user_def_type_2=None,
-                               min_parcel=1, mrpp=None, merge_ranges=True):
+                               min_parcel=1, mrpp=None):
     """Combined-weight pricing: the band rate is the freight for the WHOLE
     shipment, looked up ONCE on the total payweight — never rate * parcel_count.
 
@@ -878,67 +878,34 @@ def build_combined_weight_rows(c0, bands, max_parcel, service_level,
     only UPSGB EXPRESS SAVER carries this (see the 'EXPS_MRPP' row parsed from
     the rate card).
 
-    Row-count reduction: consecutive parcel counts that share the SAME
-    RATE_BASE (the normal case — the mrpp floor is the only thing that can
-    make it vary per mp) are merged into ONE row spanning
-    MIN_PARCEL..MAX_PARCEL, instead of one row per exact mp. EACH_WEIGHT uses
-    the ceiling from the range's smallest mp (band_top / mp_lo) — the
-    strictest per-box cap in the range, so it's still safe for every mp
-    within it (more parcels for the same band total only means a LIGHTER
-    average box). MAX_WEIGHT is written as the band's real total-weight
-    ceiling directly, NOT recomputed as MAX_PARCEL*EACH_WEIGHT (which would
-    wildly overshoot band_top once MAX_PARCEL is a range's upper end) — see
-    the MAX_WEIGHT-preserving guards in compute_numeric_totals/_ensure_numeric
-    and the formula writers.
-
-    `merge_ranges=False` disables this merge and keeps one row per exact mp
-    instead. REQUIRED for carriers with a nonzero linehaul_per_parcel (UPDE,
-    UPSGB): that surcharge is computed downstream as
-    linehaul_per_parcel * MAX_PARCEL, which is only correct when MAX_PARCEL
-    is the shipment's real parcel count — for a merged range it would be the
-    range's upper end, overcharging every shipment below that count.
+    One row per (band, mp) on purpose, even though this is the dominant
+    source of row-count bloat: the cross-carrier dominance pruning in
+    optimize_matrix/optimize_globally_df relies on seeing every (band, mp)
+    combination separately to find the true Pareto-optimal set. Merging
+    same-priced mp's into ranges HERE (tried once, reverted) shrinks each
+    band in isolation but hides options dominance would otherwise have
+    eliminated across bands, and empirically made several countries' final
+    row counts go UP, not down. The safe place to merge consecutive-mp
+    survivors is AFTER dominance pruning — see merge_parcel_count_ranges().
     """
     rows = []
     for band_top, rate, per_kg in bands:
         if per_kg:                       # skip the open-ended "over X / kg" tail
             continue
-        reachable = []
         for mp in range(min_parcel, max_parcel + 1):
             each = band_top / mp
             if max_ew is not None and each > max_ew + 1e-9:
                 continue                 # band unreachable with this few parcels
-            reachable.append(mp)
-        i = 0
-        while i < len(reachable):
-            mp_lo = reachable[i]
-            rate_base = max(rate, mp_lo * mrpp) if mrpp else rate
-            j = i
-            while (merge_ranges and j + 1 < len(reachable)
-                   and reachable[j + 1] == reachable[j] + 1
-                   and (max(rate, reachable[j + 1] * mrpp) if mrpp else rate) == rate_base):
-                j += 1
-            mp_hi = reachable[j]
-            if mp_hi == mp_lo:
-                # Single exact mp (merge_ranges=False, or no adjacent mp
-                # shares this rate) — identical to the pre-merge row shape:
-                # MIN_PARCEL blank, MAX_WEIGHT left for compute_numeric_totals
-                # to derive as MAX_PARCEL*EACH_WEIGHT (== band_top here anyway).
-                row = {**c0, 'SERVICE_LEVEL': service_level,
-                       'MAX_PARCEL': mp_hi,
-                       'EACH_WEIGHT': round(band_top / mp_lo, 6),
-                       'RATE_BASE': round(rate_base, 4)}
-            else:
-                row = {**c0, 'SERVICE_LEVEL': service_level,
-                       'MIN_PARCEL': mp_lo, 'MAX_PARCEL': mp_hi,
-                       'EACH_WEIGHT': round(band_top / mp_lo, 6),  # strictest cap in range
-                       'MAX_WEIGHT': round(band_top, 6),           # literal band ceiling
-                       'RATE_BASE': round(rate_base, 4)}           # ONE lookup, no * mp
+            rate_base = max(rate, mp * mrpp) if mrpp else rate
+            row = {**c0, 'SERVICE_LEVEL': service_level,
+                   'MAX_PARCEL': mp,
+                   'EACH_WEIGHT': round(each, 6),            # cap; mp*each = band_top
+                   'RATE_BASE': round(rate_base, 4)}         # ONE lookup, no * mp
             if postcode is not None:
                 row['POSTCODE'] = postcode
             if user_def_type_2 is not None:
                 row['USER_DEF_TYPE_2'] = user_def_type_2
             rows.append(row)
-            i = j + 1
     return rows
 
 
@@ -953,24 +920,17 @@ def build_rows_upde(rate_data, country_cfg):
     # table (lookup on the parcel's own weight, which IS the combined weight);
     # multi-parcel shipments (mp>=2) on the STDM total-weight table. Both do ONE
     # rate lookup on the band ceiling, never rate * parcel_count.
-    # merge_ranges=False everywhere in this function: UPDE has a nonzero
-    # linehaul_per_parcel (computed downstream as linehaul_per_parcel *
-    # MAX_PARCEL), so MAX_PARCEL must stay the shipment's real parcel count —
-    # a merged range's upper end would overcharge linehaul for lighter
-    # shipments in that range. See build_combined_weight_rows docstring.
     for pc, tiers in _upde_service_buckets(rate_data, 'STDS', country_cfg):
         bands = collapse_same_rate_tiers(tiers)
         rows += build_combined_weight_rows(
             c0, bands, max_parcel=1, service_level='STANDARD',
-            max_ew=max_ew, postcode=pc, user_def_type_2='single',
-            merge_ranges=False)
+            max_ew=max_ew, postcode=pc, user_def_type_2='single')
 
     for pc, tiers in _upde_service_buckets(rate_data, 'STDM', country_cfg):
         bands = collapse_same_rate_tiers(tiers)
         rows += build_combined_weight_rows(
             c0, bands, max_p, service_level='STANDARD',
-            max_ew=max_ew, postcode=pc, user_def_type_2='multi', min_parcel=2,
-            merge_ranges=False)
+            max_ew=max_ew, postcode=pc, user_def_type_2='multi', min_parcel=2)
 
     flat = rate_data.get('EXPSAVER_7R9W62')
     if flat is not None:
@@ -984,8 +944,7 @@ def build_rows_upde(rate_data, country_cfg):
         # not per parcel — use the full total-payweight bands (no max_ew cap).
         bands = collapse_same_rate_tiers(tiers)
         rows += build_combined_weight_rows(c0, bands, max_p, 'EXPRESS SAVER',
-                                           max_ew=max_ew, postcode=pc,
-                                           merge_ranges=False)
+                                           max_ew=max_ew, postcode=pc)
 
     # ---- WorldEase (WEA): flat per-country rate (CH, NO) ----
     wea = rate_data.get('WEA')
@@ -1141,19 +1100,15 @@ def build_rows_upsgb(rate_data, country_cfg):
 
     # SINGLE — combined weight: mp=1 priced on STDS. STANDARD — mp>=2 priced on
     # STDM (multi, total-weight). One rate lookup per band, never rate * parcel_count.
-    # merge_ranges=False throughout: UPSGB has a nonzero linehaul_per_parcel
-    # (computed downstream as linehaul_per_parcel * MAX_PARCEL), so MAX_PARCEL
-    # must stay the shipment's real parcel count, not a merged range's upper
-    # end. See build_combined_weight_rows docstring.
     bands_stds = collapse_same_rate_tiers(rate_data.get('STDS', []))
     rows += build_combined_weight_rows(
         c0, bands_stds, max_parcel=1, service_level='SINGLE',
-        max_ew=max_ew, merge_ranges=False)
+        max_ew=max_ew)
 
     bands_stdm = collapse_same_rate_tiers(rate_data.get('STDM', []))
     rows += build_combined_weight_rows(
         c0, bands_stdm, max_p, service_level='STANDARD',
-        max_ew=max_ew, min_parcel=2, merge_ranges=False)
+        max_ew=max_ew, min_parcel=2)
 
     # EXPS — express saver: billed on TOTAL shipment payweight (one lookup),
     # floored at mp * MRPP (minimum revenue per parcel) when the rate card
@@ -1161,7 +1116,7 @@ def build_rows_upsgb(rate_data, country_cfg):
     # minimum even if the payweight tier alone would be cheaper.
     bands = collapse_same_rate_tiers(rate_data.get('EXPS', []))
     rows += build_combined_weight_rows(c0, bands, max_p, 'EXPRESS SAVER', max_ew=max_ew,
-                                       mrpp=rate_data.get('EXPS_MRPP'), merge_ranges=False)
+                                       mrpp=rate_data.get('EXPS_MRPP'))
     return rows
 
 def build_rows_upswea(rate_data, country_cfg):
@@ -1898,6 +1853,76 @@ def optimize_globally_df(df):
     return df.iloc[keep].reset_index(drop=True)
 
 
+def merge_parcel_count_ranges(df, carrier_defaults=None):
+    """Row-count reduction: merge consecutive MAX_PARCEL survivors that share
+    the identical (CARRIER_ID, SERVICE_LEVEL, POSTCODE, MAX_WEIGHT, RATE_BASE)
+    into one MIN_PARCEL..MAX_PARCEL row.
+
+    Must run AFTER optimize_matrix/optimize_globally_df, never before.
+    build_combined_weight_rows() deliberately emits one row per (band, mp) so
+    the dominance pruning above can compare every band/mp combination and
+    find the true Pareto-optimal survivors — merging same-priced mp's into
+    ranges UP FRONT (tried once, reverted) shrinks each band in isolation but
+    hides combinations dominance would otherwise have eliminated across
+    bands, and empirically made several countries' final row counts go UP,
+    not down. Merging the already-pruned survivors here only ever removes
+    rows, since it starts from whatever dominance already decided to keep.
+
+    EACH_WEIGHT keeps the value of the range's smallest MAX_PARCEL (the
+    loosest per-box cap that's still valid there) — correct for every mp in
+    the range, since more parcels for the same band total only means a
+    lighter average box. MAX_WEIGHT is unaffected by widening MAX_PARCEL
+    here (it's already a fixed number from compute_numeric_totals, computed
+    from the pre-merge exact mp) but IS at risk of being silently recomputed
+    later from MAX_PARCEL*EACH_WEIGHT once MAX_PARCEL is a range's upper end
+    — the writers already guard against that (see the MAX_WEIGHT-literal
+    checks in compute_numeric_totals/_ensure_numeric and both formula
+    writers), which this function relies on.
+
+    Skips carriers with a nonzero linehaul_per_parcel (UPDE, UPSGB): that
+    surcharge is computed as linehaul_per_parcel * MAX_PARCEL, correct only
+    when MAX_PARCEL is the shipment's real parcel count.
+    """
+    if df is None or df.empty or 'MAX_PARCEL' not in df.columns:
+        return df
+    cd = carrier_defaults or CARRIER_DEFAULTS
+    safe_carriers = {cid for cid, d in cd.items() if d.get('linehaul_per_parcel', 0) == 0}
+    is_bucket = (df['_is_bucket'].fillna(False).astype(bool)
+                if '_is_bucket' in df.columns else pd.Series(False, index=df.index))
+    mp_num = pd.to_numeric(df['MAX_PARCEL'], errors='coerce')
+    mask = df['CARRIER_ID'].isin(safe_carriers) & mp_num.notna() & ~is_bucket
+    if not mask.any():
+        return df
+
+    fixed = df[~mask]
+    mergeable = df[mask].copy()
+    mergeable['_mw_key'] = pd.to_numeric(mergeable['MAX_WEIGHT'], errors='coerce').round(4)
+    mergeable['_mp_key'] = mp_num[mask]
+    group_cols = ['CARRIER_ID', 'SERVICE_LEVEL', 'POSTCODE', '_mw_key', 'RATE_BASE']
+
+    keep_idx = []
+    ranges = {}   # index -> (min_parcel, max_parcel)
+    for _, grp in mergeable.groupby(group_cols, dropna=False, sort=False):
+        grp = grp.sort_values('_mp_key')
+        mps = grp['_mp_key'].tolist()
+        idxs = grp.index.tolist()
+        i = 0
+        while i < len(mps):
+            j = i
+            while j + 1 < len(mps) and mps[j + 1] == mps[j] + 1:
+                j += 1
+            keep_idx.append(idxs[i])                 # smallest-mp row in the run
+            if j > i:
+                ranges[idxs[i]] = (mps[i], mps[j])
+            i = j + 1
+
+    merged = mergeable.loc[keep_idx].drop(columns=['_mw_key', '_mp_key'])
+    for idx, (lo, hi) in ranges.items():
+        merged.at[idx, 'MIN_PARCEL'] = lo
+        merged.at[idx, 'MAX_PARCEL'] = hi
+    return pd.concat([fixed, merged], ignore_index=True)
+
+
 # ==============================================================================
 # 9c. PARCEL POSTCODE EXPANSION
 # ==============================================================================
@@ -2300,6 +2325,11 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
     else:
         df_min = optimize_globally_df(df_opt) if not df_opt.empty else pd.DataFrame()
         df_ext_final, df_opt_final, df_min_final = df, df_opt, df_min
+
+    # Row-count reduction on the deliverable stage only, AFTER dominance
+    # pruning above has already found the Pareto-optimal set (see
+    # merge_parcel_count_ranges docstring for why order matters here).
+    df_min_final = merge_parcel_count_ranges(df_min_final, cd)
 
     add_buckets = not express_only   # express-only builds are parcel-only
 
