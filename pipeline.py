@@ -849,7 +849,7 @@ def _common(site, client, carrier, iso2):
 
 def build_combined_weight_rows(c0, bands, max_parcel, service_level,
                                max_ew=None, postcode=None, user_def_type_2=None,
-                               min_parcel=1, mrpp=None):
+                               min_parcel=1, mrpp=None, merge_ranges=True):
     """Combined-weight pricing: the band rate is the freight for the WHOLE
     shipment, looked up ONCE on the total payweight — never rate * parcel_count.
 
@@ -877,25 +877,68 @@ def build_combined_weight_rows(c0, bands, max_parcel, service_level,
     multi-parcel shipment never prices below its per-box minimum. Currently
     only UPSGB EXPRESS SAVER carries this (see the 'EXPS_MRPP' row parsed from
     the rate card).
+
+    Row-count reduction: consecutive parcel counts that share the SAME
+    RATE_BASE (the normal case — the mrpp floor is the only thing that can
+    make it vary per mp) are merged into ONE row spanning
+    MIN_PARCEL..MAX_PARCEL, instead of one row per exact mp. EACH_WEIGHT uses
+    the ceiling from the range's smallest mp (band_top / mp_lo) — the
+    strictest per-box cap in the range, so it's still safe for every mp
+    within it (more parcels for the same band total only means a LIGHTER
+    average box). MAX_WEIGHT is written as the band's real total-weight
+    ceiling directly, NOT recomputed as MAX_PARCEL*EACH_WEIGHT (which would
+    wildly overshoot band_top once MAX_PARCEL is a range's upper end) — see
+    the MAX_WEIGHT-preserving guards in compute_numeric_totals/_ensure_numeric
+    and the formula writers.
+
+    `merge_ranges=False` disables this merge and keeps one row per exact mp
+    instead. REQUIRED for carriers with a nonzero linehaul_per_parcel (UPDE,
+    UPSGB): that surcharge is computed downstream as
+    linehaul_per_parcel * MAX_PARCEL, which is only correct when MAX_PARCEL
+    is the shipment's real parcel count — for a merged range it would be the
+    range's upper end, overcharging every shipment below that count.
     """
     rows = []
     for band_top, rate, per_kg in bands:
         if per_kg:                       # skip the open-ended "over X / kg" tail
             continue
+        reachable = []
         for mp in range(min_parcel, max_parcel + 1):
             each = band_top / mp
             if max_ew is not None and each > max_ew + 1e-9:
                 continue                 # band unreachable with this few parcels
-            rate_base = max(rate, mp * mrpp) if mrpp else rate
-            row = {**c0, 'SERVICE_LEVEL': service_level,
-                   'MAX_PARCEL': mp,
-                   'EACH_WEIGHT': round(each, 6),            # cap; mp*each = band_top
-                   'RATE_BASE': round(rate_base, 4)}         # ONE lookup, no * mp
+            reachable.append(mp)
+        i = 0
+        while i < len(reachable):
+            mp_lo = reachable[i]
+            rate_base = max(rate, mp_lo * mrpp) if mrpp else rate
+            j = i
+            while (merge_ranges and j + 1 < len(reachable)
+                   and reachable[j + 1] == reachable[j] + 1
+                   and (max(rate, reachable[j + 1] * mrpp) if mrpp else rate) == rate_base):
+                j += 1
+            mp_hi = reachable[j]
+            if mp_hi == mp_lo:
+                # Single exact mp (merge_ranges=False, or no adjacent mp
+                # shares this rate) — identical to the pre-merge row shape:
+                # MIN_PARCEL blank, MAX_WEIGHT left for compute_numeric_totals
+                # to derive as MAX_PARCEL*EACH_WEIGHT (== band_top here anyway).
+                row = {**c0, 'SERVICE_LEVEL': service_level,
+                       'MAX_PARCEL': mp_hi,
+                       'EACH_WEIGHT': round(band_top / mp_lo, 6),
+                       'RATE_BASE': round(rate_base, 4)}
+            else:
+                row = {**c0, 'SERVICE_LEVEL': service_level,
+                       'MIN_PARCEL': mp_lo, 'MAX_PARCEL': mp_hi,
+                       'EACH_WEIGHT': round(band_top / mp_lo, 6),  # strictest cap in range
+                       'MAX_WEIGHT': round(band_top, 6),           # literal band ceiling
+                       'RATE_BASE': round(rate_base, 4)}           # ONE lookup, no * mp
             if postcode is not None:
                 row['POSTCODE'] = postcode
             if user_def_type_2 is not None:
                 row['USER_DEF_TYPE_2'] = user_def_type_2
             rows.append(row)
+            i = j + 1
     return rows
 
 
@@ -910,17 +953,24 @@ def build_rows_upde(rate_data, country_cfg):
     # table (lookup on the parcel's own weight, which IS the combined weight);
     # multi-parcel shipments (mp>=2) on the STDM total-weight table. Both do ONE
     # rate lookup on the band ceiling, never rate * parcel_count.
+    # merge_ranges=False everywhere in this function: UPDE has a nonzero
+    # linehaul_per_parcel (computed downstream as linehaul_per_parcel *
+    # MAX_PARCEL), so MAX_PARCEL must stay the shipment's real parcel count —
+    # a merged range's upper end would overcharge linehaul for lighter
+    # shipments in that range. See build_combined_weight_rows docstring.
     for pc, tiers in _upde_service_buckets(rate_data, 'STDS', country_cfg):
         bands = collapse_same_rate_tiers(tiers)
         rows += build_combined_weight_rows(
             c0, bands, max_parcel=1, service_level='STANDARD',
-            max_ew=max_ew, postcode=pc, user_def_type_2='single')
+            max_ew=max_ew, postcode=pc, user_def_type_2='single',
+            merge_ranges=False)
 
     for pc, tiers in _upde_service_buckets(rate_data, 'STDM', country_cfg):
         bands = collapse_same_rate_tiers(tiers)
         rows += build_combined_weight_rows(
             c0, bands, max_p, service_level='STANDARD',
-            max_ew=max_ew, postcode=pc, user_def_type_2='multi', min_parcel=2)
+            max_ew=max_ew, postcode=pc, user_def_type_2='multi', min_parcel=2,
+            merge_ranges=False)
 
     flat = rate_data.get('EXPSAVER_7R9W62')
     if flat is not None:
@@ -934,7 +984,8 @@ def build_rows_upde(rate_data, country_cfg):
         # not per parcel — use the full total-payweight bands (no max_ew cap).
         bands = collapse_same_rate_tiers(tiers)
         rows += build_combined_weight_rows(c0, bands, max_p, 'EXPRESS SAVER',
-                                           max_ew=max_ew, postcode=pc)
+                                           max_ew=max_ew, postcode=pc,
+                                           merge_ranges=False)
 
     # ---- WorldEase (WEA): flat per-country rate (CH, NO) ----
     wea = rate_data.get('WEA')
@@ -1090,15 +1141,19 @@ def build_rows_upsgb(rate_data, country_cfg):
 
     # SINGLE — combined weight: mp=1 priced on STDS. STANDARD — mp>=2 priced on
     # STDM (multi, total-weight). One rate lookup per band, never rate * parcel_count.
+    # merge_ranges=False throughout: UPSGB has a nonzero linehaul_per_parcel
+    # (computed downstream as linehaul_per_parcel * MAX_PARCEL), so MAX_PARCEL
+    # must stay the shipment's real parcel count, not a merged range's upper
+    # end. See build_combined_weight_rows docstring.
     bands_stds = collapse_same_rate_tiers(rate_data.get('STDS', []))
     rows += build_combined_weight_rows(
         c0, bands_stds, max_parcel=1, service_level='SINGLE',
-        max_ew=max_ew)
+        max_ew=max_ew, merge_ranges=False)
 
     bands_stdm = collapse_same_rate_tiers(rate_data.get('STDM', []))
     rows += build_combined_weight_rows(
         c0, bands_stdm, max_p, service_level='STANDARD',
-        max_ew=max_ew, min_parcel=2)
+        max_ew=max_ew, min_parcel=2, merge_ranges=False)
 
     # EXPS — express saver: billed on TOTAL shipment payweight (one lookup),
     # floored at mp * MRPP (minimum revenue per parcel) when the rate card
@@ -1106,7 +1161,7 @@ def build_rows_upsgb(rate_data, country_cfg):
     # minimum even if the payweight tier alone would be cheaper.
     bands = collapse_same_rate_tiers(rate_data.get('EXPS', []))
     rows += build_combined_weight_rows(c0, bands, max_p, 'EXPRESS SAVER', max_ew=max_ew,
-                                       mrpp=rate_data.get('EXPS_MRPP'))
+                                       mrpp=rate_data.get('EXPS_MRPP'), merge_ranges=False)
     return rows
 
 def build_rows_upswea(rate_data, country_cfg):
@@ -1196,7 +1251,15 @@ def compute_numeric_totals(df, carrier_defaults=None):
     if df.empty:
         return df
 
-    df['MAX_WEIGHT'] = df['MAX_PARCEL'] * df['EACH_WEIGHT']
+    # Combined-weight rows from build_combined_weight_rows already carry the
+    # real band ceiling as a literal MAX_WEIGHT (MIN_PARCEL..MAX_PARCEL is a
+    # merged range, so MAX_PARCEL*EACH_WEIGHT would wildly overshoot it) —
+    # only derive it here for rows that don't have one yet.
+    if 'MAX_WEIGHT' not in df.columns:
+        df['MAX_WEIGHT'] = df['MAX_PARCEL'] * df['EACH_WEIGHT']
+    else:
+        derived = df['MAX_PARCEL'] * df['EACH_WEIGHT']
+        df['MAX_WEIGHT'] = pd.to_numeric(df['MAX_WEIGHT'], errors='coerce').fillna(derived)
 
     df['FUEL'] = df.apply(
         lambda r: cd[r['CARRIER_ID']]['fuel_pct'] * r['RATE_BASE'], axis=1
@@ -1269,8 +1332,15 @@ def _build_formulas_for_row(row_dict, excel_row, carrier_defaults=None, lookup=N
     # formulas for them so we don't emit "=*" ; their values stay literal (None).
     has_grid = (row_dict.get('MAX_PARCEL') is not None
                 and row_dict.get('EACH_WEIGHT') is not None)
-    if has_grid:
+    # A merged parcel-count-range row (see build_combined_weight_rows) already
+    # carries the real band ceiling as a literal MAX_WEIGHT — MAX_PARCEL is
+    # the range's upper end there, so MAX_PARCEL*EACH_WEIGHT would wildly
+    # overshoot it. Only derive MAX_WEIGHT by formula when it isn't preset.
+    mw_literal = row_dict.get('MAX_WEIGHT')
+    has_mw_literal = mw_literal is not None and not pd.isna(mw_literal)
+    if has_grid and not has_mw_literal:
         f['MAX_WEIGHT']  = f"={L['MAX_PARCEL']}{excel_row}*{L['EACH_WEIGHT']}{excel_row}"
+    if has_grid:
         f['MAX_VOLUME']  = f"={L['MAX_WEIGHT']}{excel_row}/{cfg['volume_divisor']}"
         f['EACH_VOLUME'] = f"={L['EACH_WEIGHT']}{excel_row}/{cfg['volume_divisor']}"
     if cfg.get('fuel_variables_ref'):
@@ -1410,7 +1480,8 @@ def _write_filtered_excel(input_path, output_path, keep_indices):
 def _ensure_numeric(df, input_path):
     df = df.copy()
     if df['MAX_WEIGHT'].isna().any():
-        df['MAX_WEIGHT'] = df['MAX_PARCEL'] * df['EACH_WEIGHT']
+        derived = df['MAX_PARCEL'] * df['EACH_WEIGHT']
+        df['MAX_WEIGHT'] = df['MAX_WEIGHT'].fillna(derived)
     variables = {}
     try:
         wb = openpyxl.load_workbook(input_path, data_only=True)
@@ -2957,8 +3028,16 @@ def write_matrix_with_formulas(df, output_path, country_cfg,
             cfg = cd.get(carrier, {})
             has_grid = (rec.get('MAX_PARCEL') is not None and not pd.isna(rec.get('MAX_PARCEL'))
                         and rec.get('EACH_WEIGHT') is not None and not pd.isna(rec.get('EACH_WEIGHT')))
-            if has_grid and L_MW and L_MP and L_EW:
+            # A merged parcel-count-range row (build_combined_weight_rows)
+            # already carries the real band ceiling as a literal MAX_WEIGHT —
+            # MAX_PARCEL is the range's upper end there, so MAX_PARCEL*
+            # EACH_WEIGHT would wildly overshoot it. Only derive it by
+            # formula when it isn't preset.
+            mw_literal = rec.get('MAX_WEIGHT')
+            has_mw_literal = mw_literal is not None and not pd.isna(mw_literal)
+            if has_grid and L_MW and L_MP and L_EW and not has_mw_literal:
                 formulas['MAX_WEIGHT'] = f"={L_MP}{ri}*{L_EW}{ri}"
+            if has_grid and L_MW:
                 if L_MV: formulas['MAX_VOLUME']  = f"={L_MW}{ri}/{cfg.get('volume_divisor', 1)}"
                 if L_EV: formulas['EACH_VOLUME'] = f"={L_EW}{ri}/{cfg.get('volume_divisor', 1)}"
             fuel_row = fuel_rows.get(carrier)
