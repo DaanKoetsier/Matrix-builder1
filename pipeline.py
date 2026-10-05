@@ -166,6 +166,10 @@ COUNTRY_CONFIG['DE']['carriers'] = ['UPDE', 'DPD', 'DHL-ROS']
 # GB — UK domestic via UPSGB, plus NL-origin export carriers that quote GB
 COUNTRY_CONFIG['GB'] = _default_country_cfg('GB')
 COUNTRY_CONFIG['GB']['carriers'] = ['UPSGB', 'UPSNL']
+# Both GB carriers are UPS (70 kg per parcel). The UPSGB STDS/EXPS tables run to
+# 70 kg, so a 31.5 kg cap dropped every single-parcel band above 25 kg.
+COUNTRY_CONFIG['GB']['max_each_weight_kg'] = 70.0
+COUNTRY_CONFIG['GB']['each_weight_grid']   = list(range(1, 71))
 COUNTRY_CONFIG['CH']['carriers'] = ['UPSWEA']
 COUNTRY_CONFIG['NO']['carriers'] = ['UPSWEA']
 
