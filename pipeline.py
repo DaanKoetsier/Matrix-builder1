@@ -1836,17 +1836,18 @@ def optimize_globally_df(df):
 
 def optimize_globally_for_country(df, country):
     """optimize_globally_df, but island-only carriers (COUNTRY_ISLAND_ONLY_CARRIERS)
-    are optimised on their own. Those carriers only ever get their exclusive
-    postcodes (e.g. GB UPSNL -> BT/GY/IM/JE), where no other carrier delivers, so
-    a cheaper mainland row must not knock their rows out. Rows of every other
-    carrier are kept exactly as the joint optimisation leaves them."""
+    and the mainland carriers are optimised separately. The island carriers only
+    ever get their exclusive postcodes (e.g. GB UPSNL -> BT/GY/IM/JE) and the
+    others never do, so the two groups never compete for the same shipment: a
+    row from one group must not knock out a row of the other. (For GB this also
+    avoids comparing UPSGB's GBP totals against UPSNL's EUR totals.)"""
     island = COUNTRY_ISLAND_ONLY_CARRIERS.get(country)
     if df.empty or not island or not df['CARRIER_ID'].isin(island).any():
         return optimize_globally_df(df)
     df = df.reset_index(drop=True).assign(_opt_pos=lambda d: range(len(d)))
-    joint  = optimize_globally_df(df)
-    island_rows = optimize_globally_df(df[df['CARRIER_ID'].isin(island)])
-    out = pd.concat([joint[~joint['CARRIER_ID'].isin(island)], island_rows])
+    is_island = df['CARRIER_ID'].isin(island)
+    out = pd.concat([optimize_globally_df(df[~is_island]),
+                     optimize_globally_df(df[is_island])])
     return (out.sort_values('_opt_pos').drop(columns='_opt_pos')
                .reset_index(drop=True))
 
