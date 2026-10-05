@@ -8,6 +8,7 @@ touching module-level globals (important for concurrent Streamlit users).
 """
 
 import re
+import math
 import logging
 import shutil
 from copy import deepcopy
@@ -893,7 +894,9 @@ def build_combined_weight_rows(c0, bands, max_parcel, service_level,
             rate_base = max(rate, mp * mrpp) if mrpp else rate
             row = {**c0, 'SERVICE_LEVEL': service_level,
                    'MAX_PARCEL': mp,
-                   'EACH_WEIGHT': round(each, 6),            # cap; mp*each = band_top
+                   # Round UP so mp*EACH_WEIGHT never lands just under band_top
+                   # (200/6 -> 33.333334, not 33.333333 = 199.999998 kg).
+                   'EACH_WEIGHT': math.ceil(each * 1e6 - 1e-6) / 1e6,
                    'RATE_BASE': round(rate_base, 4)}         # ONE lookup, no * mp
             if postcode is not None:
                 row['POSTCODE'] = postcode
@@ -1831,6 +1834,24 @@ def optimize_globally_df(df):
     return df.iloc[keep].reset_index(drop=True)
 
 
+def optimize_globally_for_country(df, country):
+    """optimize_globally_df, but island-only carriers (COUNTRY_ISLAND_ONLY_CARRIERS)
+    and the mainland carriers are optimised separately. The island carriers only
+    ever get their exclusive postcodes (e.g. GB UPSNL -> BT/GY/IM/JE) and the
+    others never do, so the two groups never compete for the same shipment: a
+    row from one group must not knock out a row of the other. (For GB this also
+    avoids comparing UPSGB's GBP totals against UPSNL's EUR totals.)"""
+    island = COUNTRY_ISLAND_ONLY_CARRIERS.get(country)
+    if df.empty or not island or not df['CARRIER_ID'].isin(island).any():
+        return optimize_globally_df(df)
+    df = df.reset_index(drop=True).assign(_opt_pos=lambda d: range(len(d)))
+    is_island = df['CARRIER_ID'].isin(island)
+    out = pd.concat([optimize_globally_df(df[~is_island]),
+                     optimize_globally_df(df[is_island])])
+    return (out.sort_values('_opt_pos').drop(columns='_opt_pos')
+               .reset_index(drop=True))
+
+
 # ==============================================================================
 # 9c. PARCEL POSTCODE EXPANSION
 # ==============================================================================
@@ -2219,7 +2240,7 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
 
     any_buckets = bool(exceptions or overflow_rules or postcode_rules)
     if any_buckets and not df.empty:
-        df_min = optimize_globally_df(df_opt)
+        df_min = optimize_globally_for_country(df_opt, country)
 
         def _decorate(d):
             d = add_overflow_buckets(d, overflow_rules, cd, cfg)
@@ -2231,7 +2252,7 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
         df_opt_final = _decorate(df_opt)
         df_min_final = _decorate(df_min)
     else:
-        df_min = optimize_globally_df(df_opt) if not df_opt.empty else pd.DataFrame()
+        df_min = optimize_globally_for_country(df_opt, country) if not df_opt.empty else pd.DataFrame()
         df_ext_final, df_opt_final, df_min_final = df, df_opt, df_min
 
     add_buckets = not express_only   # express-only builds are parcel-only
