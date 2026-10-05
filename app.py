@@ -554,7 +554,7 @@ if selected:
                 ov['carriers'] = st.multiselect("Carriers", list(pl.CARRIER_DEFAULTS),
                                                 default=ov['carriers'], key=f'car_{country}')
             with c2:
-                ov['max_parcel_count'] = st.number_input("Max parcels", 1, 20,
+                ov['max_parcel_count'] = st.number_input("Max parcels", 1, 40,
                                                          value=ov['max_parcel_count'], key=f'mp_{country}')
             with c3:
                 ov['max_each_weight_kg'] = st.number_input("Max kg", 1.0, 70.0,

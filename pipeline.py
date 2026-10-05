@@ -171,6 +171,7 @@ COUNTRY_CONFIG['GB']['carriers'] = ['UPSGB', 'UPSNL']
 # 70 kg, so a 31.5 kg cap dropped every single-parcel band above 25 kg.
 COUNTRY_CONFIG['GB']['max_each_weight_kg'] = 70.0
 COUNTRY_CONFIG['GB']['each_weight_grid']   = list(range(1, 71))
+COUNTRY_CONFIG['GB']['max_parcel_count']   = 40
 COUNTRY_CONFIG['CH']['carriers'] = ['UPSWEA']
 COUNTRY_CONFIG['NO']['carriers'] = ['UPSWEA']
 
