@@ -8,6 +8,7 @@ touching module-level globals (important for concurrent Streamlit users).
 """
 
 import re
+import math
 import logging
 import shutil
 from copy import deepcopy
@@ -893,7 +894,9 @@ def build_combined_weight_rows(c0, bands, max_parcel, service_level,
             rate_base = max(rate, mp * mrpp) if mrpp else rate
             row = {**c0, 'SERVICE_LEVEL': service_level,
                    'MAX_PARCEL': mp,
-                   'EACH_WEIGHT': round(each, 6),            # cap; mp*each = band_top
+                   # Round UP so mp*EACH_WEIGHT never lands just under band_top
+                   # (200/6 -> 33.333334, not 33.333333 = 199.999998 kg).
+                   'EACH_WEIGHT': math.ceil(each * 1e6 - 1e-6) / 1e6,
                    'RATE_BASE': round(rate_base, 4)}         # ONE lookup, no * mp
             if postcode is not None:
                 row['POSTCODE'] = postcode
