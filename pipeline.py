@@ -907,10 +907,24 @@ def build_combined_weight_rows(c0, bands, max_parcel, service_level,
     return rows
 
 
+# UPS weight-band tables (UPDE STDS/STDM/EXPRESS SAVER, UPSNL EXPRESS SAVER,
+# UPSGB STDS/STDM/EXPS) are priced up to 70 kg per parcel. Capping their boxes at
+# the country's generic 31.5 kg dropped every band above it, so a single bulky
+# box (e.g. 0.25 m3 = 42 kg payweight) got no parcel rate and fell through to the
+# DHL-FENDER pallet. Flat per-parcel rates (DPD, DHL, PostNord, UPDE 7R9W62/WEA)
+# keep the country cap.
+UPS_MAX_PARCEL_KG = 70.0
+
+
+def _ups_table_max_ew(country_cfg):
+    return max(float(country_cfg['max_each_weight_kg']), UPS_MAX_PARCEL_KG)
+
+
 def build_rows_upde(rate_data, country_cfg):
     rows   = []
     max_p  = country_cfg['max_parcel_count']
-    max_ew = country_cfg['max_each_weight_kg']
+    max_ew = country_cfg['max_each_weight_kg']        # flat per-parcel rows
+    ups_ew = _ups_table_max_ew(country_cfg)            # weight-band tables
     c0     = _common(country_cfg['site_id'], country_cfg['client_id'],
                      'UPDE', country_cfg['iso2'])
 
@@ -922,13 +936,13 @@ def build_rows_upde(rate_data, country_cfg):
         bands = collapse_same_rate_tiers(tiers)
         rows += build_combined_weight_rows(
             c0, bands, max_parcel=1, service_level='STANDARD',
-            max_ew=max_ew, postcode=pc, user_def_type_2='single')
+            max_ew=ups_ew, postcode=pc, user_def_type_2='single')
 
     for pc, tiers in _upde_service_buckets(rate_data, 'STDM', country_cfg):
         bands = collapse_same_rate_tiers(tiers)
         rows += build_combined_weight_rows(
             c0, bands, max_p, service_level='STANDARD',
-            max_ew=max_ew, postcode=pc, user_def_type_2='multi', min_parcel=2)
+            max_ew=ups_ew, postcode=pc, user_def_type_2='multi', min_parcel=2)
 
     flat = rate_data.get('EXPSAVER_7R9W62')
     if flat is not None:
@@ -942,7 +956,7 @@ def build_rows_upde(rate_data, country_cfg):
         # not per parcel — use the full total-payweight bands (no max_ew cap).
         bands = collapse_same_rate_tiers(tiers)
         rows += build_combined_weight_rows(c0, bands, max_p, 'EXPRESS SAVER',
-                                           max_ew=max_ew, postcode=pc)
+                                           max_ew=ups_ew, postcode=pc)
 
     # ---- WorldEase (WEA): flat per-country rate (CH, NO) ----
     wea = rate_data.get('WEA')
@@ -1004,7 +1018,7 @@ def build_rows_upsnl(rate_data, country_cfg):
     # so every zone uses combined-weight rows (no per-parcel * mp, no max_ew cap).
     rows   = []
     max_p  = country_cfg['max_parcel_count']
-    max_ew = country_cfg['max_each_weight_kg']
+    max_ew = _ups_table_max_ew(country_cfg)
     pc_min, pc_max = country_cfg['postcode_prefix_range']
     c0     = _common(country_cfg['site_id'], country_cfg['client_id'],
                      'UPSNL', country_cfg['iso2'])
@@ -1092,7 +1106,7 @@ def build_rows_upsgb(rate_data, country_cfg):
     via carrier_defaults."""
     rows   = []
     max_p  = country_cfg['max_parcel_count']
-    max_ew = country_cfg['max_each_weight_kg']
+    max_ew = _ups_table_max_ew(country_cfg)
     c0     = _common(country_cfg['site_id'], country_cfg['client_id'],
                      'UPSGB', country_cfg['iso2'])
 
