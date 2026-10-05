@@ -1834,6 +1834,23 @@ def optimize_globally_df(df):
     return df.iloc[keep].reset_index(drop=True)
 
 
+def optimize_globally_for_country(df, country):
+    """optimize_globally_df, but island-only carriers (COUNTRY_ISLAND_ONLY_CARRIERS)
+    are optimised on their own. Those carriers only ever get their exclusive
+    postcodes (e.g. GB UPSNL -> BT/GY/IM/JE), where no other carrier delivers, so
+    a cheaper mainland row must not knock their rows out. Rows of every other
+    carrier are kept exactly as the joint optimisation leaves them."""
+    island = COUNTRY_ISLAND_ONLY_CARRIERS.get(country)
+    if df.empty or not island or not df['CARRIER_ID'].isin(island).any():
+        return optimize_globally_df(df)
+    df = df.reset_index(drop=True).assign(_opt_pos=lambda d: range(len(d)))
+    joint  = optimize_globally_df(df)
+    island_rows = optimize_globally_df(df[df['CARRIER_ID'].isin(island)])
+    out = pd.concat([joint[~joint['CARRIER_ID'].isin(island)], island_rows])
+    return (out.sort_values('_opt_pos').drop(columns='_opt_pos')
+               .reset_index(drop=True))
+
+
 # ==============================================================================
 # 9c. PARCEL POSTCODE EXPANSION
 # ==============================================================================
@@ -2222,7 +2239,7 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
 
     any_buckets = bool(exceptions or overflow_rules or postcode_rules)
     if any_buckets and not df.empty:
-        df_min = optimize_globally_df(df_opt)
+        df_min = optimize_globally_for_country(df_opt, country)
 
         def _decorate(d):
             d = add_overflow_buckets(d, overflow_rules, cd, cfg)
@@ -2234,7 +2251,7 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
         df_opt_final = _decorate(df_opt)
         df_min_final = _decorate(df_min)
     else:
-        df_min = optimize_globally_df(df_opt) if not df_opt.empty else pd.DataFrame()
+        df_min = optimize_globally_for_country(df_opt, country) if not df_opt.empty else pd.DataFrame()
         df_ext_final, df_opt_final, df_min_final = df, df_opt, df_min
 
     add_buckets = not express_only   # express-only builds are parcel-only
