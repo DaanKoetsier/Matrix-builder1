@@ -2185,10 +2185,20 @@ def append_standard_exceptions(df, has_pallet, site_id='NLMOE01', client_id='NLF
 # flat bucket row) preserves normal weight-tier pricing. The postcode is
 # still written into POSTCODE for human readability — CargoWrite matches on
 # USER_DEF_TYPE_1, this is not a second matching key.
+#
+# `source_postcode` (optional) copies only the carrier rows of that postcode
+# prefix — needed for zone-priced carriers such as the DHL-FENDER pallet, whose
+# rate depends on the zip zone. Pallet rows exist only when a pallet file is
+# loaded, so a pallet-only exception adds nothing without one.
 USER_DEF_TYPE_1_CARRIER_EXCEPTIONS = {
     'GB': [
         {'user_def_type_1': 'Wunjo Guitars', 'carrier_id': 'UPSGB', 'postcode': 'WC2H 8LP'},
         {'user_def_type_1': 'Brunswick Guitars', 'carrier_id': 'UPSGB', 'postcode': 'SY1 1PN'},
+    ],
+    # Audio Partner, Mezi Vodami 23, Praha 4 — receives pallets only.
+    'CZ': [
+        {'user_def_type_1': 'Audio Partner', 'carrier_id': 'DHL-FENDER',
+         'postcode': '143 00', 'source_postcode': '14'},
     ],
 }
 
@@ -2205,7 +2215,12 @@ def append_named_carrier_exceptions(df, country):
     extra = []
     for rule in rules:
         base = df[(df['CARRIER_ID'] == rule['carrier_id']) & ~is_bucket]
+        if rule.get('source_postcode'):
+            base = base[base['POSTCODE'].astype(str).str.strip()
+                        == str(rule['source_postcode'])]
         if base.empty:
+            log.warning('%s: no %s rows for named exception %r', country,
+                        rule['carrier_id'], rule['user_def_type_1'])
             continue
         dup = base.copy()
         dup['USER_DEF_TYPE_1'] = rule['user_def_type_1']
