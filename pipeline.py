@@ -1850,19 +1850,39 @@ def optimize_globally_df(df):
 
 
 def optimize_globally_for_country(df, country):
-    """optimize_globally_df, but island-only carriers (COUNTRY_ISLAND_ONLY_CARRIERS)
-    and the mainland carriers are optimised separately. The island carriers only
-    ever get their exclusive postcodes (e.g. GB UPSNL -> BT/GY/IM/JE) and the
-    others never do, so the two groups never compete for the same shipment: a
-    row from one group must not knock out a row of the other. (For GB this also
-    avoids comparing UPSGB's GBP totals against UPSNL's EUR totals.)"""
-    island = COUNTRY_ISLAND_ONLY_CARRIERS.get(country)
-    if df.empty or not island or not df['CARRIER_ID'].isin(island).any():
+    """optimize_globally_df, plus two country rules so a carrier that is the ONLY
+    one serving some postcodes keeps every rate step there:
+
+    - Island-only carriers (COUNTRY_ISLAND_ONLY_CARRIERS, e.g. GB UPSNL) and the
+      mainland carriers are optimised separately: the two groups never get the
+      same postcodes, so a row from one must not knock out a row of the other.
+      (For GB this also avoids comparing UPSGB's GBP totals with UPSNL's EUR.)
+    - A carrier that also serves the mainland but is the sole carrier for some
+      COUNTRY_EXCLUSIVE_POSTCODES (e.g. ES/PT islands -> UPSNL) keeps its jointly
+      optimised rows for the mainland; the rows a cheaper mainland carrier
+      knocked out are added back flagged `_excl_only`, so explode_parcel_postcodes
+      gives them only that carrier's exclusive postcodes."""
+    if df.empty:
+        return optimize_globally_df(df)
+    island = COUNTRY_ISLAND_ONLY_CARRIERS.get(country) or set()
+    excl = set(COUNTRY_EXCLUSIVE_POSTCODES.get(country, {}).values()) - island
+    present = set(df['CARRIER_ID'])
+    if not (island & present) and not (excl & present):
         return optimize_globally_df(df)
     df = df.reset_index(drop=True).assign(_opt_pos=lambda d: range(len(d)))
     is_island = df['CARRIER_ID'].isin(island)
-    out = pd.concat([optimize_globally_df(df[~is_island]),
-                     optimize_globally_df(df[is_island])])
+    parts = [optimize_globally_df(df[~is_island])]
+    if is_island.any():
+        parts.append(optimize_globally_df(df[is_island]))
+    kept = set(pd.concat(parts)['_opt_pos'])
+    for carrier in sorted(excl & present):
+        alone = optimize_globally_df(df[df['CARRIER_ID'] == carrier])
+        extra = alone[~alone['_opt_pos'].isin(kept)]
+        if not extra.empty:
+            parts.append(extra.assign(_excl_only=True))
+    out = pd.concat(parts)
+    if '_excl_only' in out.columns:
+        out['_excl_only'] = out['_excl_only'].fillna(False).astype(bool)
     return (out.sort_values('_opt_pos').drop(columns='_opt_pos')
                .reset_index(drop=True))
 
@@ -1897,6 +1917,11 @@ def optimize_globally_for_country(df, country):
 COUNTRY_EXCLUSIVE_POSTCODES = {
     'GB': {'BT': 'UPSNL', 'GY': 'UPSNL', 'IM': 'UPSNL', 'JE': 'UPSNL',
            'WC2H 8LP': 'UPSGB', 'SY1 1PN': 'UPSGB'},
+    # Spain: Canary Islands (35, 38) and Ceuta / Melilla (51, 52) — UPDE has no
+    # Standard there and DPD's country-wide flat rate does not apply; UPSNL only.
+    'ES': {pc: 'UPSNL' for pc in ('35', '38', '51', '52')},
+    # Portugal: Madeira and the Azores (all 9xxx postcodes) — UPSNL only.
+    'PT': {f'9{d}': 'UPSNL' for d in range(10)},
 }
 
 # Carriers that must NOT get the country's general postcode list at all — only
@@ -1953,9 +1978,21 @@ def explode_parcel_postcodes(df, postcodes, exclusive=None, restrict_carriers=No
         # catch-all buckets carry a blank POSTCODE on purpose — they're a
         # single literal row per country, never a per-postcode price lookup.
         target = target & ~df['_is_bucket'].fillna(False).astype(bool)
+    if exclusive:
+        # A parcel row that already carries a postcode (zoned UPDE / UPSNL) must
+        # not stay on a code that belongs exclusively to another carrier.
+        excl_up = {str(c).strip().upper(): car for c, car in exclusive.items()}
+        owner = pc.astype(str).str.strip().str.upper().map(excl_up)
+        wrong = is_parcel & ~blank & owner.notna() & (owner != df['CARRIER_ID'])
+        if wrong.any():
+            df, target = df[~wrong], target[~wrong]
     if not target.any():
         return df, 0
-    if not codes and not exclusive:
+    if not codes:
+        # No postcode list (no pallet file): leave rows blank as before, but
+        # never let exclusive-only rows become country-wide.
+        if '_excl_only' in df.columns:
+            df = df[~df['_excl_only'].fillna(False).astype(bool)]
         return df, -1
     keep = df[~target].copy()
     base = df[target].copy().reset_index(drop=True)
@@ -1969,9 +2006,11 @@ def explode_parcel_postcodes(df, postcodes, exclusive=None, restrict_carriers=No
     general_codes = [c for c in codes if c not in exclusive]
     restrict_carriers = restrict_carriers or set()
     pieces = []
-    for carrier, grp in base.groupby('CARRIER_ID', sort=False):
+    excl_only = (base['_excl_only'].fillna(False).astype(bool)
+                 if '_excl_only' in base.columns else pd.Series(False, index=base.index))
+    for (carrier, only), grp in base.groupby([base['CARRIER_ID'], excl_only], sort=False):
         own_codes = [c for c, car in exclusive.items() if car == carrier]
-        if carrier in restrict_carriers:
+        if carrier in restrict_carriers or only:
             this_codes = own_codes
         else:
             this_codes = general_codes + [c for c in own_codes if c not in general_codes]
@@ -2146,10 +2185,20 @@ def append_standard_exceptions(df, has_pallet, site_id='NLMOE01', client_id='NLF
 # flat bucket row) preserves normal weight-tier pricing. The postcode is
 # still written into POSTCODE for human readability — CargoWrite matches on
 # USER_DEF_TYPE_1, this is not a second matching key.
+#
+# `source_postcode` (optional) copies only the carrier rows of that postcode
+# prefix — needed for zone-priced carriers such as the DHL-FENDER pallet, whose
+# rate depends on the zip zone. Pallet rows exist only when a pallet file is
+# loaded, so a pallet-only exception adds nothing without one.
 USER_DEF_TYPE_1_CARRIER_EXCEPTIONS = {
     'GB': [
         {'user_def_type_1': 'Wunjo Guitars', 'carrier_id': 'UPSGB', 'postcode': 'WC2H 8LP'},
         {'user_def_type_1': 'Brunswick Guitars', 'carrier_id': 'UPSGB', 'postcode': 'SY1 1PN'},
+    ],
+    # Audio Partner, Mezi Vodami 23, Praha 4 — receives pallets only.
+    'CZ': [
+        {'user_def_type_1': 'Audio Partner', 'carrier_id': 'DHL-FENDER',
+         'postcode': '143 00', 'source_postcode': '14'},
     ],
 }
 
@@ -2166,7 +2215,12 @@ def append_named_carrier_exceptions(df, country):
     extra = []
     for rule in rules:
         base = df[(df['CARRIER_ID'] == rule['carrier_id']) & ~is_bucket]
+        if rule.get('source_postcode'):
+            base = base[base['POSTCODE'].astype(str).str.strip()
+                        == str(rule['source_postcode'])]
         if base.empty:
+            log.warning('%s: no %s rows for named exception %r', country,
+                        rule['carrier_id'], rule['user_def_type_1'])
             continue
         dup = base.copy()
         dup['USER_DEF_TYPE_1'] = rule['user_def_type_1']
@@ -2290,7 +2344,7 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
         elif n > 0:
             log.info('%s: exploded %d blank parcel rows × %d postcodes',
                      country, n, len([p for p in (parcel_postcodes or []) if str(p).strip()]))
-        return exploded
+        return exploded.drop(columns='_excl_only', errors='ignore')
 
     if has_pallet:
         # Merge pallet rows into each stage (pallet rows never dominate parcel
