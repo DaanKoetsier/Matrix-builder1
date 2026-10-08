@@ -855,9 +855,14 @@ def _common(site, client, carrier, iso2):
             'USER_DEF_TYPE_4': None, 'AWKWARD': None, 'RATE_EXTRA': 0}
 
 
+def _ceil6(x):
+    """Round up to 6 decimals (never below x)."""
+    return math.ceil(x * 1e6 - 1e-6) / 1e6
+
+
 def build_combined_weight_rows(c0, bands, max_parcel, service_level,
                                max_ew=None, postcode=None, user_def_type_2=None,
-                               min_parcel=1, mrpp=None):
+                               min_parcel=1, mrpp=None, collapse_parcels=False):
     """Combined-weight pricing: the band rate is the freight for the WHOLE
     shipment, looked up ONCE on the total payweight — never rate * parcel_count.
 
@@ -885,8 +890,32 @@ def build_combined_weight_rows(c0, bands, max_parcel, service_level,
     multi-parcel shipment never prices below its per-box minimum. Currently
     only UPSGB EXPRESS SAVER carries this (see the 'EXPS_MRPP' row parsed from
     the rate card).
+
+    `collapse_parcels`: for carriers whose price does not depend on the parcel
+    count at all (no per-parcel linehaul, no MRPP — UPSNL), emit ONE row per band
+    instead of one per parcel count: MAX_PARCEL = max_parcel, EACH_WEIGHT = the
+    per-box limit, and an explicit MAX_WEIGHT = band_top (CargoWrite checks
+    MAX_WEIGHT on its own). Same prices, ~max_parcel times fewer rows.
     """
     rows = []
+    if collapse_parcels:
+        assert not mrpp, 'collapse_parcels needs a parcel-count-independent price'
+        for band_top, rate, per_kg in bands:
+            if per_kg:
+                continue
+            row = {**c0, 'SERVICE_LEVEL': service_level,
+                   'MAX_PARCEL': max_parcel,
+                   'EACH_WEIGHT': _ceil6(min(band_top, max_ew) if max_ew else band_top),
+                   'MAX_WEIGHT': _ceil6(band_top),
+                   'RATE_BASE': round(rate, 4)}
+            if min_parcel > 1:
+                row['MIN_PARCEL'] = min_parcel
+            if postcode is not None:
+                row['POSTCODE'] = postcode
+            if user_def_type_2 is not None:
+                row['USER_DEF_TYPE_2'] = user_def_type_2
+            rows.append(row)
+        return rows
     for band_top, rate, per_kg in bands:
         if per_kg:                       # skip the open-ended "over X / kg" tail
             continue
@@ -899,7 +928,7 @@ def build_combined_weight_rows(c0, bands, max_parcel, service_level,
                    'MAX_PARCEL': mp,
                    # Round UP so mp*EACH_WEIGHT never lands just under band_top
                    # (200/6 -> 33.333334, not 33.333333 = 199.999998 kg).
-                   'EACH_WEIGHT': math.ceil(each * 1e6 - 1e-6) / 1e6,
+                   'EACH_WEIGHT': _ceil6(each),
                    'RATE_BASE': round(rate_base, 4)}         # ONE lookup, no * mp
             if postcode is not None:
                 row['POSTCODE'] = postcode
@@ -1030,9 +1059,11 @@ def build_rows_upsnl(rate_data, country_cfg):
                      for z, t in rate_data.get('rates_by_zone', {}).items()}
 
     def emit(zone, pc):
+        # UPSNL has no per-parcel linehaul / minimum, so the price depends on the
+        # total weight only: one row per band covers every parcel count.
         return build_combined_weight_rows(
             c0, bands_by_zone.get(zone, []), max_p, 'EXPRESS SAVER',
-            max_ew=max_ew, postcode=pc)
+            max_ew=max_ew, postcode=pc, collapse_parcels=True)
 
     # No zone table at all → no postcode, use first available zone
     if not zones:
@@ -1220,7 +1251,11 @@ def compute_numeric_totals(df, carrier_defaults=None):
     if df.empty:
         return df
 
-    df['MAX_WEIGHT'] = df['MAX_PARCEL'] * df['EACH_WEIGHT']
+    product = df['MAX_PARCEL'] * df['EACH_WEIGHT']
+    if 'MAX_WEIGHT' in df.columns:           # explicit cap (collapsed rows) wins
+        df['MAX_WEIGHT'] = pd.to_numeric(df['MAX_WEIGHT'], errors='coerce').fillna(product)
+    else:
+        df['MAX_WEIGHT'] = product
 
     df['FUEL'] = df.apply(
         lambda r: cd[r['CARRIER_ID']]['fuel_pct'] * r['RATE_BASE'], axis=1
@@ -1265,6 +1300,19 @@ COL_LETTER = {name: openpyxl.utils.get_column_letter(i + 1)
               for i, name in enumerate(COLUMN_ORDER)}
 
 
+def _max_weight_is_grid(row):
+    """True when MAX_WEIGHT is just MAX_PARCEL x EACH_WEIGHT (write it as that
+    formula); False for collapsed rows that carry their own MAX_WEIGHT cap."""
+    try:
+        mw = float(row.get('MAX_WEIGHT'))
+        prod = float(row.get('MAX_PARCEL')) * float(row.get('EACH_WEIGHT'))
+    except (TypeError, ValueError):
+        return True
+    if mw != mw:                     # NaN -> no explicit cap
+        return True
+    return abs(mw - prod) < 1e-6
+
+
 def _build_formulas_for_row(row_dict, excel_row, carrier_defaults=None, lookup=None):
     cd     = carrier_defaults or CARRIER_DEFAULTS
     L      = COL_LETTER
@@ -1294,7 +1342,8 @@ def _build_formulas_for_row(row_dict, excel_row, carrier_defaults=None, lookup=N
     has_grid = (row_dict.get('MAX_PARCEL') is not None
                 and row_dict.get('EACH_WEIGHT') is not None)
     if has_grid:
-        f['MAX_WEIGHT']  = f"={L['MAX_PARCEL']}{excel_row}*{L['EACH_WEIGHT']}{excel_row}"
+        if _max_weight_is_grid(row_dict):
+            f['MAX_WEIGHT'] = f"={L['MAX_PARCEL']}{excel_row}*{L['EACH_WEIGHT']}{excel_row}"
         f['MAX_VOLUME']  = f"={L['MAX_WEIGHT']}{excel_row}/{cfg['volume_divisor']}"
         f['EACH_VOLUME'] = f"={L['EACH_WEIGHT']}{excel_row}/{cfg['volume_divisor']}"
     if cfg.get('fuel_variables_ref'):
@@ -3071,7 +3120,8 @@ def write_matrix_with_formulas(df, output_path, country_cfg,
             has_grid = (rec.get('MAX_PARCEL') is not None and not pd.isna(rec.get('MAX_PARCEL'))
                         and rec.get('EACH_WEIGHT') is not None and not pd.isna(rec.get('EACH_WEIGHT')))
             if has_grid and L_MW and L_MP and L_EW:
-                formulas['MAX_WEIGHT'] = f"={L_MP}{ri}*{L_EW}{ri}"
+                if _max_weight_is_grid(rec):
+                    formulas['MAX_WEIGHT'] = f"={L_MP}{ri}*{L_EW}{ri}"
                 if L_MV: formulas['MAX_VOLUME']  = f"={L_MW}{ri}/{cfg.get('volume_divisor', 1)}"
                 if L_EV: formulas['EACH_VOLUME'] = f"={L_EW}{ri}/{cfg.get('volume_divisor', 1)}"
             fuel_row = fuel_rows.get(carrier)
