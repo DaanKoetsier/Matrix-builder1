@@ -19,6 +19,7 @@ import shutil
 import tempfile
 import zipfile
 from copy import deepcopy
+from functools import partial
 from pathlib import Path
 
 import pandas as pd
@@ -801,17 +802,17 @@ def render_results(results, heading, kp, fname_prefix, *, caption=None):
         for col, key, label in [(c2, 'extended', '📥 Extended'),
                                 (c3, 'optimized', '📥 Optimized'),
                                 (c4, 'minimal', '📥 Minimal')]:
-            col.download_button(label, data=file_bytes(r[key]),
+            col.download_button(label, data=partial(file_bytes, r[key]),
                                 file_name=Path(r[key]).name,
                                 mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                                key=f'dl_{kp}_{country}_{key}')
+                                key=f'dl_{kp}_{country}_{key}', on_click='ignore')
 
     st.markdown("#### Download everything")
     dc1, dc2 = st.columns(2)
     with dc1:
-        st.download_button("📦 Download all countries as ZIP", data=make_zip(results),
+        st.download_button("📦 Download all countries as ZIP", data=partial(make_zip, results),
                            file_name=f"{fname_prefix}rate_matrices.zip", mime="application/zip",
-                           type="primary", key=f'dl_{kp}_zip')
+                           type="primary", key=f'dl_{kp}_zip', on_click='ignore')
     with dc2:
         _vl_rows = st.session_state.get('variables_layout_rows', pl.VARIABLES_LAYOUT)
         _xlsx_mime = ('application/vnd.openxmlformats-officedocument.'
@@ -819,20 +820,27 @@ def render_results(results, heading, kp, fname_prefix, *, caption=None):
         st.caption("🧩 **Combined** — every selected country merged into one sheet, "
                    "sorted by country then price. Numeric values so per-country "
                    "surcharges (e.g. MAUT) stay correct.")
+        st.caption("Each file is built when you click its button — a large "
+                   "all-country workbook can take a minute or two.")
         for _stage, _label in [('extended',  '🧩 Combined extended'),
                                ('optimized', '🧩 Combined optimized'),
                                ('minimal',   '🧩 Combined minimal')]:
-            _combined = make_combined(
-                results, _vl_rows, stage=_stage,
-                pallet_maut=st.session_state.get('pallet_maut_table'),
-                pallet_defaults=st.session_state.get('pallet_defaults_used'),
-                carrier_defaults=st.session_state.get('carrier_defaults_used'),
-                all_country_maut=st.session_state.get('all_country_maut_used'))
-            if _combined is not None:
+            # Built on click (deferred), not on every rerun: building all three
+            # all-country workbooks on each page interaction exhausted the
+            # server's memory/time for big runs (e.g. every country, express).
+            _available = any(r.get(f'{_stage}_df') and Path(r[f'{_stage}_df']).exists()
+                             for r in results.values())
+            if _available:
                 st.download_button(
-                    _label, data=_combined,
+                    _label,
+                    data=partial(
+                        make_combined, results, _vl_rows, stage=_stage,
+                        pallet_maut=st.session_state.get('pallet_maut_table'),
+                        pallet_defaults=st.session_state.get('pallet_defaults_used'),
+                        carrier_defaults=st.session_state.get('carrier_defaults_used'),
+                        all_country_maut=st.session_state.get('all_country_maut_used')),
                     file_name=f"{fname_prefix}Combined_Matrix_{_stage}.xlsx", mime=_xlsx_mime,
-                    key=f'dl_{kp}_combined_{_stage}',
+                    key=f'dl_{kp}_combined_{_stage}', on_click='ignore',
                     type=('primary' if _stage == 'minimal' else 'secondary'))
             else:
                 st.caption(f"Combined {_stage} unavailable — re-run to regenerate.")
