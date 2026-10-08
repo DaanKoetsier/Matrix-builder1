@@ -2768,6 +2768,7 @@ def write_matrix_numeric(df, output_path, country_cfg, variables_layout=None,
     whenever pallet rows are present, and for the combined export. Colours
     bucket rows amber."""
     from openpyxl import Workbook
+    from openpyxl.cell import WriteOnlyCell
     from openpyxl.styles import PatternFill
     vl    = variables_layout or VARIABLES_LAYOUT
     vl, lookup = _build_all_country_variables(
@@ -2775,11 +2776,12 @@ def write_matrix_numeric(df, output_path, country_cfg, variables_layout=None,
     order = column_order or (PALLET_COLUMN_ORDER
                              if 'MOBILITY' in df.columns else COLUMN_ORDER)
     is_pallet_sheet = 'MOBILITY' in order
-    wb = Workbook()
-    ws = wb.active
-    ws.title = f"{_iso3(country_cfg.get('iso2', 'ALL'))} Matrix"
-    for ci, col in enumerate(order, 1):
-        ws.cell(1, ci, col)
+    # write_only streams rows to disk: several times faster and far less
+    # memory than cell-by-cell writes, which matters for the all-country
+    # combined export (hundreds of thousands of rows).
+    wb = Workbook(write_only=True)
+    ws = wb.create_sheet(f"{_iso3(country_cfg.get('iso2', 'ALL'))} Matrix")
+    ws.append(list(order))
     df = df.copy()
     if 'COUNTRYISO2' in df.columns:
         df['_ISO2'] = df['COUNTRYISO2']
@@ -2855,18 +2857,28 @@ def write_matrix_numeric(df, output_path, country_cfg, variables_layout=None,
         if not sentinel and sum_start:
             formulas['TOTAL_PRICE'] = f"=SUM({sum_start}{ri}:{sum_end}{ri})"
 
-        for ci, col in enumerate(order, 1):
+        values = []
+        for col in order:
             if col in formulas:
-                cell = ws.cell(ri, ci, formulas[col])
+                v = formulas[col]
             else:
                 v = rec.get(col)
-                cell = ws.cell(ri, ci, None if (v is None or (isinstance(v, float) and pd.isna(v))) else v)
+                if v is None or (isinstance(v, float) and pd.isna(v)):
+                    v = None
             if is_bucket:
+                cell = WriteOnlyCell(ws, value=v)
                 cell.fill = fill
+                v = cell
+            values.append(v)
+        ws.append(values)
     vs = wb.create_sheet('Variables')
-    _write_variables_sheet(vs, vl)
+    for row in vl:                      # same layout as _write_variables_sheet
+        vs.append([row[0]] + list(row[1:]))
     wb.save(output_path)
     log.info('wrote %s (%d rows, numeric)', output_path, len(df_sorted))
+
+
+EXCEL_MAX_DATA_ROWS = 1_048_576 - 1      # one header row
 
 
 def write_combined_matrix(frames, output_path, variables_layout=None,
@@ -2881,6 +2893,11 @@ def write_combined_matrix(frames, output_path, variables_layout=None,
     combined = _align_columns(frames)
     if combined.empty:
         raise ValueError("write_combined_matrix: no rows to write.")
+    if len(combined) > EXCEL_MAX_DATA_ROWS:
+        raise ValueError(
+            f"{len(combined):,} rows is more than one Excel sheet can hold "
+            f"({EXCEL_MAX_DATA_ROWS:,}). Download the countries separately or "
+            f"select fewer countries.")
     has_pallet = 'MOBILITY' in combined.columns
     order = PALLET_COLUMN_ORDER if has_pallet else COLUMN_ORDER
     combined = combined.sort_values(['COUNTRYISO2', 'TOTAL_PRICE'],

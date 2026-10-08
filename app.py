@@ -674,6 +674,9 @@ if (run_btn or exp_btn) and uploaded and selected:
     express_mode = bool(exp_btn)
     _store = 'results_express' if express_mode else 'results'
     st.session_state[_store] = {}
+    _kp = 'exp' if express_mode else 'std'
+    for _k in [k for k in st.session_state.keys() if str(k).startswith(f'_built_{_kp}_')]:
+        del st.session_state[_k]
     input_path = st.session_state['input_path']
     errors = {}
     rules    = exception_rules_from_editor(st.session_state.get('exceptions_df', DEFAULT_EXCEPTIONS))
@@ -780,6 +783,32 @@ if (run_btn or exp_btn) and uploaded and selected:
 elif (run_btn or exp_btn) and not selected:
     st.warning("Please select at least one country.")
 
+def _built_download(label, state_key, build, file_name, mime, primary=False):
+    """Two-step download for big files: a Build button runs `build()` once and
+    keeps the bytes in session_state; then a plain download button serves them.
+    Nothing is rebuilt on other page interactions (that used to exhaust the
+    server on big runs), and no deferred-download request is needed (those
+    fail with "Invalid session ID" after a reconnect)."""
+    data = st.session_state.get(state_key)
+    if data is None:
+        if st.button(f"⚙️ Build — {label}", key=f'btn{state_key}',
+                     type=('primary' if primary else 'secondary'),
+                     use_container_width=True):
+            with st.spinner(f"Building {file_name}…"):
+                try:
+                    data = build()
+                except Exception as e:          # e.g. over Excel's 1,048,576 rows
+                    st.error(f"Could not build {file_name}: {e}")
+                    data = None
+            if data is not None:
+                st.session_state[state_key] = data
+    if data is not None:
+        st.download_button(label, data=data, file_name=file_name, mime=mime,
+                           key=f'dl{state_key}', on_click='ignore',
+                           type=('primary' if primary else 'secondary'),
+                           use_container_width=True)
+
+
 # ── Results ──────────────────────────────────────────────────────────────────
 def render_results(results, heading, kp, fname_prefix, *, caption=None):
     """Render the summary + per-country + bulk download blocks for one result set.
@@ -802,7 +831,7 @@ def render_results(results, heading, kp, fname_prefix, *, caption=None):
         for col, key, label in [(c2, 'extended', '📥 Extended'),
                                 (c3, 'optimized', '📥 Optimized'),
                                 (c4, 'minimal', '📥 Minimal')]:
-            col.download_button(label, data=partial(file_bytes, r[key]),
+            col.download_button(label, data=file_bytes(r[key]),
                                 file_name=Path(r[key]).name,
                                 mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                                 key=f'dl_{kp}_{country}_{key}', on_click='ignore')
@@ -810,9 +839,10 @@ def render_results(results, heading, kp, fname_prefix, *, caption=None):
     st.markdown("#### Download everything")
     dc1, dc2 = st.columns(2)
     with dc1:
-        st.download_button("📦 Download all countries as ZIP", data=partial(make_zip, results),
-                           file_name=f"{fname_prefix}rate_matrices.zip", mime="application/zip",
-                           type="primary", key=f'dl_{kp}_zip', on_click='ignore')
+        _built_download("📦 Download all countries as ZIP", f'_built_{kp}_zip',
+                        partial(make_zip, results),
+                        file_name=f"{fname_prefix}rate_matrices.zip", mime="application/zip",
+                        primary=True)
     with dc2:
         _vl_rows = st.session_state.get('variables_layout_rows', pl.VARIABLES_LAYOUT)
         _xlsx_mime = ('application/vnd.openxmlformats-officedocument.'
@@ -820,28 +850,24 @@ def render_results(results, heading, kp, fname_prefix, *, caption=None):
         st.caption("🧩 **Combined** — every selected country merged into one sheet, "
                    "sorted by country then price. Numeric values so per-country "
                    "surcharges (e.g. MAUT) stay correct.")
-        st.caption("Each file is built when you click its button — a large "
-                   "all-country workbook can take a minute or two.")
+        st.caption("Click **Build** first — a large all-country workbook can take "
+                   "a minute or two — then download it.")
         for _stage, _label in [('extended',  '🧩 Combined extended'),
                                ('optimized', '🧩 Combined optimized'),
                                ('minimal',   '🧩 Combined minimal')]:
-            # Built on click (deferred), not on every rerun: building all three
-            # all-country workbooks on each page interaction exhausted the
-            # server's memory/time for big runs (e.g. every country, express).
             _available = any(r.get(f'{_stage}_df') and Path(r[f'{_stage}_df']).exists()
                              for r in results.values())
             if _available:
-                st.download_button(
-                    _label,
-                    data=partial(
+                _built_download(
+                    _label, f'_built_{kp}_combined_{_stage}',
+                    partial(
                         make_combined, results, _vl_rows, stage=_stage,
                         pallet_maut=st.session_state.get('pallet_maut_table'),
                         pallet_defaults=st.session_state.get('pallet_defaults_used'),
                         carrier_defaults=st.session_state.get('carrier_defaults_used'),
                         all_country_maut=st.session_state.get('all_country_maut_used')),
                     file_name=f"{fname_prefix}Combined_Matrix_{_stage}.xlsx", mime=_xlsx_mime,
-                    key=f'dl_{kp}_combined_{_stage}', on_click='ignore',
-                    type=('primary' if _stage == 'minimal' else 'secondary'))
+                    primary=(_stage == 'minimal'))
             else:
                 st.caption(f"Combined {_stage} unavailable — re-run to regenerate.")
 
