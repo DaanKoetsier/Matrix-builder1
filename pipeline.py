@@ -174,6 +174,8 @@ COUNTRY_CONFIG['GB']['each_weight_grid']   = list(range(1, 71))
 COUNTRY_CONFIG['GB']['max_parcel_count']   = 40
 COUNTRY_CONFIG['CH']['carriers'] = ['UPSWEA']
 COUNTRY_CONFIG['NO']['carriers'] = ['UPSWEA']
+COUNTRY_CONFIG['CH']['max_parcel_count'] = 40
+COUNTRY_CONFIG['NO']['max_parcel_count'] = 40
 
 # San Marino, Malta, Cyprus: UPSNL only (the master file has no DPD/DHL-ROS
 # rate data for any of these three, and the client wants UPSNL exclusively
