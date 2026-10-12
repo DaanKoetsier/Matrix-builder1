@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 CARRIER_DEFAULTS = {
     'UPDE': {
         'label': 'UPS DE',
-        'services': ['STANDARD', 'EXPRESS SAVER 7R9W62', 'EXPRESS SAVER'],
+        'services': ['STANDARD', 'EXPRESS SAVER'],
         'has_postcode': True,
         'volume_divisor': 167,
         'fuel_pct': 0.27,
@@ -118,6 +118,28 @@ CARRIER_DEFAULTS = {
         'linehaul_per_parcel': 0.0,
     },
 }
+
+# UPS DE account 7R9W62 (Germany only, flat rate per parcel). CargoWrite books
+# it under its own carrier / service code, so its rows carry CARRIER_ID
+# 'UPSDE SINGLE' and SERVICE_LEVEL 'SAVER'; everything else (fuel, linehaul,
+# volume divisor) is UPS DE's. Aliases are not offered as separate carriers in
+# the app; sync_carrier_aliases() copies the base carrier's settings onto them.
+CARRIER_ALIASES = {'UPSDE SINGLE': 'UPDE'}
+UPDE_7R9W62_CARRIER = 'UPSDE SINGLE'
+UPDE_7R9W62_SERVICE = 'SAVER'
+CARRIER_DEFAULTS['UPSDE SINGLE'] = {**CARRIER_DEFAULTS['UPDE'],
+                                    'label': 'UPS DE 7R9W62', 'services': ['SAVER']}
+SELECTABLE_CARRIERS = [c for c in CARRIER_DEFAULTS if c not in CARRIER_ALIASES]
+
+
+def sync_carrier_aliases(cd):
+    """Give every alias carrier its base carrier's (possibly edited) settings."""
+    for alias, base in CARRIER_ALIASES.items():
+        if base in cd:
+            cd[alias] = {**cd[base], 'label': cd.get(alias, {}).get('label', alias),
+                         'services': cd.get(alias, {}).get('services', [])}
+    return cd
+
 
 VARIABLES_LAYOUT = [
     ('FUEL UPSDE',    0.27),   # B1
@@ -998,7 +1020,8 @@ def build_rows_upde(rate_data, country_cfg):
     flat = rate_data.get('EXPSAVER_7R9W62')
     if flat is not None:
         for mp in range(1, max_p + 1):
-            rows.append({**c0, 'SERVICE_LEVEL': 'EXPRESS SAVER 7R9W62',
+            rows.append({**c0, 'CARRIER_ID': UPDE_7R9W62_CARRIER,
+                         'SERVICE_LEVEL': UPDE_7R9W62_SERVICE,
                          'MAX_PARCEL': mp, 'EACH_WEIGHT': max_ew,
                          'RATE_BASE': round(flat * mp, 4)})
 
@@ -2333,15 +2356,16 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
         df = compute_numeric_totals(df, cd)
 
     # ── Express-only mode ─────────────────────────────────────────────────────
-    # Keep only the EXPRESS SAVER service rows: UPDE 'EXPRESS SAVER 7R9W62' and
-    # 'EXPRESS SAVER', UPSNL 'EXPRESS SAVER', UPSGB 'EXPRESS SAVER'. Drops
+    # Keep only the EXPRESS SAVER service rows: UPDE 'EXPRESS SAVER', the
+    # 7R9W62 account ('UPSDE SINGLE' / 'SAVER'), UPSNL 'EXPRESS SAVER', UPSGB 'EXPRESS SAVER'. Drops
     # STANDARD / PARCEL / WORLDEASE and switches pallets off (express is
     # parcel-only). The substring match catches both UPDE express variants.
     if express_only:
         pallet_zones = None
         if not df.empty:
-            keep = df['SERVICE_LEVEL'].astype(str).str.contains(
-                'EXPRESS SAVER', case=False, na=False)
+            keep = (df['SERVICE_LEVEL'].astype(str).str.contains(
+                        'EXPRESS SAVER', case=False, na=False)
+                    | (df['CARRIER_ID'] == UPDE_7R9W62_CARRIER))   # 7R9W62 = express
             df = df[keep].copy().reset_index(drop=True)
             log.info('express-only filter: %d express rows kept', len(df))
 
@@ -2810,7 +2834,7 @@ def _align_columns(frames):
 
 
 _FUEL_VAR_NAME = {
-    'UPDE': 'FUEL UPSDE', 'DHL-ROS': 'FUEL DHL', 'DPD': 'FUEL DPD',
+    'UPDE': 'FUEL UPSDE', 'UPSDE SINGLE': 'FUEL UPSDE', 'DHL-ROS': 'FUEL DHL', 'DPD': 'FUEL DPD',
     'UPSNL': 'FUEL UPSNL', 'POSTNORD': 'FUEL POSTNORD', 'UPSGB': 'FUEL UPSGB',
     'UPSWEA': 'FUEL UPSWEA',
 }
