@@ -174,8 +174,28 @@ COUNTRY_CONFIG['GB']['each_weight_grid']   = list(range(1, 71))
 COUNTRY_CONFIG['GB']['max_parcel_count']   = 40
 COUNTRY_CONFIG['CH']['carriers'] = ['UPSWEA']
 COUNTRY_CONFIG['NO']['carriers'] = ['UPSWEA']
-COUNTRY_CONFIG['CH']['max_parcel_count'] = 40
-COUNTRY_CONFIG['NO']['max_parcel_count'] = 40
+
+# Express-only matrix: carriers quoting EXPRESS SAVER, plus fixed per-country
+# choices that differ from the standard matrix. Countries listed here use
+# exactly these carriers in the express matrix (the standard matrix is
+# unaffected); every other country keeps its own carriers that quote express.
+EXPRESS_CARRIERS = ['UPDE', 'UPSNL', 'UPSGB']
+EXPRESS_CARRIERS_BY_COUNTRY = {
+    'LI': ['UPSNL'], 'CH': ['UPSNL'], 'NO': ['UPSNL'],
+    'SM': ['UPSNL'], 'MT': ['UPSNL'], 'CY': ['UPSNL'],
+    # GB mainland via UPSGB; UPSNL stays for the islands only (BT/GY/IM/JE,
+    # COUNTRY_ISLAND_ONLY_CARRIERS), where UPSGB does not deliver.
+    'GB': ['UPSGB', 'UPSNL'],
+}
+
+
+def express_carriers(country, carriers):
+    """Carriers to use for `country` in the express-only matrix."""
+    fixed = EXPRESS_CARRIERS_BY_COUNTRY.get(country.upper())
+    if fixed is not None:
+        return list(fixed)
+    return [c for c in carriers if c in EXPRESS_CARRIERS]
+
 
 # San Marino, Malta, Cyprus: UPSNL only (the master file has no DPD/DHL-ROS
 # rate data for any of these three, and the client wants UPSNL exclusively

@@ -47,7 +47,7 @@ ALL_COUNTRIES  = sorted(pl.COUNTRY_CONFIG.keys())
 CARRIER_LABELS = {cid: cfg['label'] for cid, cfg in pl.CARRIER_DEFAULTS.items()}
 FUEL_CARRIERS  = ['UPDE', 'DHL-ROS', 'DPD', 'UPSNL', 'POSTNORD', 'UPSGB', 'UPSWEA']
 MAUT_CARRIERS  = ['DPD', 'DHL-ROS']
-EXPRESS_CARRIERS = ['UPDE', 'UPSNL', 'UPSGB']   # the only carriers quoting EXPRESS SAVER
+EXPRESS_CARRIERS = pl.EXPRESS_CARRIERS   # the only carriers quoting EXPRESS SAVER
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -725,8 +725,7 @@ if (run_btn or exp_btn) and uploaded and selected:
         try:
             cfg = country_cfg_with_overrides(country)
             if express_mode:
-                cfg['carriers'] = [c for c in cfg['carriers']
-                                   if c in EXPRESS_CARRIERS]
+                cfg['carriers'] = pl.express_carriers(country, cfg['carriers'])
             pallet_zones = (pp.country_pallet_data(pallets, country)
                             if pallets and not express_mode else None)
             # Postcode list for parcel expansion: sourced from the pallet file's
