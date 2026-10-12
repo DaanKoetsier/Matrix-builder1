@@ -88,7 +88,7 @@ def carrier_defaults(fuel_vals, maut_dhl, maut_dpd):
             cd[cid]['fuel_pct'] = pct
     cd['DHL-ROS']['maut_pct'] = maut_dhl
     cd['DPD']['maut_pct']     = maut_dpd
-    return cd
+    return pl.sync_carrier_aliases(cd)
 
 
 def country_cfg_with_overrides(country):
@@ -480,7 +480,7 @@ with st.sidebar:
     exp_btn = st.button("⚡ Express-only matrices",
                         use_container_width=True, disabled=(uploaded is None),
                         help="Build a matrix with ONLY the EXPRESS SAVER options — "
-                             "UPS DE (7R9W62 + EXPRESS SAVER), UPS NL EXPRESS SAVER, "
+                             "UPS DE (7R9W62 as UPSDE SINGLE / SAVER + EXPRESS SAVER), UPS NL EXPRESS SAVER, "
                              "UPS GB EXPRESS SAVER. No STANDARD, no DPD/DHL, no pallets. "
                              "Results appear in their own section so a standard run "
                              "isn't overwritten.")
@@ -552,7 +552,7 @@ if selected:
             st.markdown(f"**{country}**")
             c1, c2, c3, c4, c5 = st.columns([3, 1, 1, 1, 1])
             with c1:
-                ov['carriers'] = st.multiselect("Carriers", list(pl.CARRIER_DEFAULTS),
+                ov['carriers'] = st.multiselect("Carriers", list(pl.SELECTABLE_CARRIERS),
                                                 default=ov['carriers'], key=f'car_{country}')
             with c2:
                 ov['max_parcel_count'] = st.number_input("Max parcels", 1, 40,
@@ -587,7 +587,7 @@ with st.expander("📐 Exceptions & buckets — oversize / surcharges per carrie
         column_config={
             'Enabled': st.column_config.CheckboxColumn(width="small"),
             'Carrier': st.column_config.SelectboxColumn(
-                options=['(all)'] + list(pl.CARRIER_DEFAULTS), width="small"),
+                options=['(all)'] + list(pl.SELECTABLE_CARRIERS), width="small"),
             'Country (blank=all)': st.column_config.TextColumn(
                 help="ISO2 code(s), comma-separated. Blank = all countries.", width="small"),
             'Service level (blank=all)': st.column_config.TextColumn(
@@ -614,7 +614,7 @@ with st.expander("📐 Exceptions & buckets — oversize / surcharges per carrie
         column_config={
             'Enabled': st.column_config.CheckboxColumn(width="small"),
             'Carrier': st.column_config.SelectboxColumn(
-                options=['(all)'] + list(pl.CARRIER_DEFAULTS), width="small"),
+                options=['(all)'] + list(pl.SELECTABLE_CARRIERS), width="small"),
             'Country (blank=all)': st.column_config.TextColumn(width="small"),
             'Overflow rate €/parcel': st.column_config.NumberColumn(format="%.2f"),
             'Surcharge €/parcel': st.column_config.NumberColumn(format="%.2f"),
@@ -632,7 +632,7 @@ with st.expander("📐 Exceptions & buckets — oversize / surcharges per carrie
         column_config={
             'Enabled': st.column_config.CheckboxColumn(width="small"),
             'Carrier': st.column_config.SelectboxColumn(
-                options=['(all)'] + list(pl.CARRIER_DEFAULTS), width="small"),
+                options=['(all)'] + list(pl.SELECTABLE_CARRIERS), width="small"),
             'Country (blank=all)': st.column_config.TextColumn(width="small"),
             'Surcharge €': st.column_config.NumberColumn(format="%.2f"),
         }, key='postcode_editor')
@@ -653,7 +653,7 @@ with st.expander("📐 Exceptions & buckets — oversize / surcharges per carrie
         column_config={
             'Enabled': st.column_config.CheckboxColumn(width="small"),
             'Carrier': st.column_config.SelectboxColumn(
-                options=['(all)'] + list(pl.CARRIER_DEFAULTS), width="small"),
+                options=['(all)'] + list(pl.SELECTABLE_CARRIERS), width="small"),
             'Country (blank=all)': st.column_config.TextColumn(width="small"),
             'Weight threshold kg': st.column_config.NumberColumn(
                 format="%.1f", help="Surcharge rows whose per-box cap can hold a "
@@ -878,7 +878,7 @@ if st.session_state.get('results_express'):
     st.divider()
     render_results(
         st.session_state.results_express, "## ⚡ Express-only results", "exp", "EXPRESS_",
-        caption="EXPRESS SAVER options only — UPS DE (7R9W62 + EXPRESS SAVER), "
+        caption="EXPRESS SAVER options only — UPS DE (7R9W62 = UPSDE SINGLE / SAVER, + EXPRESS SAVER), "
                 "UPS NL EXPRESS SAVER, UPS GB EXPRESS SAVER. No STANDARD / pallets.")
 
 
