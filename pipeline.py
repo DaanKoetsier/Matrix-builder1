@@ -2023,7 +2023,8 @@ COUNTRY_EXCLUSIVE_POSTCODES = {
            'WC2H 8LP': 'UPSGB', 'SY1 1PN': 'UPSGB'},
     # Spain: Canary Islands (35, 38) and Ceuta / Melilla (51, 52) — UPDE has no
     # Standard there and DPD's country-wide flat rate does not apply; UPSNL only.
-    'ES': {pc: 'UPSNL' for pc in ('35', '38', '51', '52')},
+    # Balearic Islands (07) — UPSNL only as well.
+    'ES': {pc: 'UPSNL' for pc in ('07', '35', '38', '51', '52')},
     # Portugal: Madeira and the Azores (all 9xxx postcodes) — UPSNL only.
     'PT': {f'9{d}': 'UPSNL' for d in range(10)},
 }
