@@ -187,6 +187,10 @@ COUNTRY_CONFIG = {iso: _default_country_cfg(iso) for iso in [
 COUNTRY_CONFIG['DE']['carriers'] = ['UPDE', 'DPD', 'DHL-ROS']
 
 # GB — UK domestic via UPSGB, plus NL-origin export carriers that quote GB
+# Spain: postcodes run 01-52 only. Without this the zoned UPDE rows were also
+# written for the non-existent prefixes 00 and 53-99.
+COUNTRY_CONFIG['ES']['postcode_prefix_range'] = (1, 52)
+
 COUNTRY_CONFIG['GB'] = _default_country_cfg('GB')
 COUNTRY_CONFIG['GB']['carriers'] = ['UPSGB', 'UPSNL']
 # Both GB carriers are UPS (70 kg per parcel). The UPSGB STDS/EXPS tables run to
@@ -2008,6 +2012,12 @@ def optimize_globally_for_country(df, country):
 # only ever compares the first TWO characters of an order's postcode against
 # this matrix, so 'WC' can never equal the literal string 'WC2H 8LP' — the
 # client asked for these entries to stay regardless.
+# Postcodes that must get parcel rows even though the pallet file (the source
+# of the per-country postcode list) has no pallet rate for them.
+COUNTRY_EXTRA_POSTCODES = {
+    'ES': ['07'],          # Balearic Islands (Mallorca, Ibiza, Menorca)
+}
+
 COUNTRY_EXCLUSIVE_POSTCODES = {
     'GB': {'BT': 'UPSNL', 'GY': 'UPSNL', 'IM': 'UPSNL', 'JE': 'UPSNL',
            'WC2H 8LP': 'UPSGB', 'SY1 1PN': 'UPSGB'},
@@ -2017,6 +2027,20 @@ COUNTRY_EXCLUSIVE_POSTCODES = {
     # Portugal: Madeira and the Azores (all 9xxx postcodes) — UPSNL only.
     'PT': {f'9{d}': 'UPSNL' for d in range(10)},
 }
+
+# Countries whose exclusive codes above only apply to postcodes that are actually
+# in the pallet/postcode file — they are never added on top of it.
+COUNTRY_EXCLUSIVE_ONLY_IF_LISTED = {'PT'}
+
+
+def exclusive_postcodes_for(country, codes=None):
+    """COUNTRY_EXCLUSIVE_POSTCODES for `country`, limited to `codes` when the
+    country is in COUNTRY_EXCLUSIVE_ONLY_IF_LISTED."""
+    excl = COUNTRY_EXCLUSIVE_POSTCODES.get(country)
+    if not excl or country not in COUNTRY_EXCLUSIVE_ONLY_IF_LISTED:
+        return excl
+    listed = {str(c).strip().upper() for c in (codes or [])}
+    return {c: car for c, car in excl.items() if c.upper() in listed}
 
 # Carriers that must NOT get the country's general postcode list at all — only
 # their exclusive codes above. e.g. GB's UPSNL now serves only the islands
@@ -2349,6 +2373,10 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
     cd = carrier_defaults or CARRIER_DEFAULTS
     vl = variables_layout or VARIABLES_LAYOUT
     country = country.upper()
+    if parcel_postcodes:
+        parcel_postcodes = list(parcel_postcodes) + [
+            p for p in COUNTRY_EXTRA_POSTCODES.get(country, [])
+            if p not in {str(x).strip() for x in parcel_postcodes}]
 
     df = build_extended_matrix(parsed, cfg)
     log.info('raw parcel rows: %d', len(df))
@@ -2430,7 +2458,7 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
         nonlocal pc_warn
         exploded, n = explode_parcel_postcodes(
             frame, parcel_postcodes,
-            exclusive=COUNTRY_EXCLUSIVE_POSTCODES.get(country),
+            exclusive=exclusive_postcodes_for(country, parcel_postcodes),
             restrict_carriers=COUNTRY_ISLAND_ONLY_CARRIERS.get(country))
         if n == -1 and pc_warn is None:
             pc_warn = (f"⚠️ {country}: no postcode list available — parcel rows "
