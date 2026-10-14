@@ -198,6 +198,12 @@ COUNTRY_CONFIG['GB']['carriers'] = ['UPSGB', 'UPSNL']
 COUNTRY_CONFIG['GB']['max_each_weight_kg'] = 70.0
 COUNTRY_CONFIG['GB']['each_weight_grid']   = list(range(1, 71))
 COUNTRY_CONFIG['GB']['max_parcel_count']   = 40
+
+# Per-country parcel limits, sized on the client's order history (most parcels
+# per shipment). Everything else stays at the default of 20.
+for _iso, _max_p in {'FR': 30, 'GR': 30, 'BG': 30,
+                     'NL': 25, 'IT': 25, 'PL': 25}.items():
+    COUNTRY_CONFIG[_iso]['max_parcel_count'] = _max_p
 COUNTRY_CONFIG['CH']['carriers'] = ['UPSWEA']
 COUNTRY_CONFIG['NO']['carriers'] = ['UPSWEA']
 
