@@ -247,7 +247,7 @@ ISO2_TO_ISO3 = {
     'IE': 'IRL', 'IT': 'ITA', 'LI': 'LIE', 'LT': 'LTU', 'LU': 'LUX',
     'LV': 'LVA', 'MC': 'MCO', 'NL': 'NLD', 'NO': 'NOR', 'PL': 'POL',
     'PT': 'PRT', 'RO': 'ROU', 'SE': 'SWE', 'SI': 'SVN', 'SK': 'SVK',
-    'SM': 'SMR',
+    'SM': 'SMR', 'CY': 'CYP', 'MT': 'MLT',
 }
 
 
@@ -1681,6 +1681,12 @@ def _recompute_total(df):
     return df
 
 
+# Small-parcel tariffs with their own size limit: DPD small (<= 3 kg) is
+# limited to 140 cm (longest side + 2x the two shorter sides); USER_DEF_TYPE_1
+# only holds one length, so 1.4 m instead of DPD's 1.75 m.
+SMALL_TARIFF_SIZE = {'DPD': (3.0, 1.4)}
+
+
 def apply_exceptions(df, rules):
     """Stamp normal limits on in-scope base rows and append bucket twins.
 
@@ -1753,6 +1759,11 @@ def apply_exceptions(df, rules):
         # ---- mode == 'stamp' (original behaviour) ----
         # 1) stamp the normal limit onto the cheap base rows
         df.loc[scope, ccol] = rule['normal_value']
+        if ccol == 'USER_DEF_TYPE_1' and 'EACH_WEIGHT' in df.columns:
+            ew = pd.to_numeric(df['EACH_WEIGHT'], errors='coerce')
+            for car, (max_kg, size) in SMALL_TARIFF_SIZE.items():
+                small = scope & (df['CARRIER_ID'] == car) & (ew <= max_kg + 1e-9)
+                df.loc[small, ccol] = size
 
         # 2) build the bucket twins (limit removed, flagged, surcharged)
         twins = df[scope].copy()
@@ -2014,6 +2025,15 @@ def optimize_globally_for_country(df, country):
 # client asked for these entries to stay regardless.
 # Postcodes that must get parcel rows even though the pallet file (the source
 # of the per-country postcode list) has no pallet rate for them.
+# Postcode list for countries the pallet file has no postcodes for (otherwise
+# their parcel rows stay blank). First two characters, as CargoWrite compares
+# them.
+COUNTRY_DEFAULT_POSTCODES = {
+    'LI': ['94'],                                  # 9485-9498
+    'SM': ['47'],                                  # 4789x
+    'CY': ['All'],                                 # whole island, like MT / LU
+}
+
 COUNTRY_EXTRA_POSTCODES = {
     'ES': ['07'],          # Balearic Islands (Mallorca, Ibiza, Menorca)
 }
@@ -2030,8 +2050,9 @@ COUNTRY_EXCLUSIVE_POSTCODES = {
 }
 
 # Countries whose exclusive codes above only apply to postcodes that are actually
-# in the pallet/postcode file — they are never added on top of it.
-COUNTRY_EXCLUSIVE_ONLY_IF_LISTED = {'PT'}
+# in the pallet/postcode file — they are never added on top of it. (Empty: PT's
+# Madeira / Azores (9x) are not in the DHL pallet file but must get UPSNL rows.)
+COUNTRY_EXCLUSIVE_ONLY_IF_LISTED = set()
 
 
 def exclusive_postcodes_for(country, codes=None):
@@ -2299,9 +2320,9 @@ def append_standard_exceptions(df, has_pallet, site_id='NLMOE01', client_id='NLF
 # matrix, so a specific address like WC2H 8LP is compared as 'WC' — it can
 # never equal the literal string 'WC2H 8LP'. Confirmed by the client: these
 # two customers' orders are instead identified by CUSTOMER NAME in
-# USER_DEF_TYPE_1 (not CLIENT_ID — that was tried and rejected). Duplicating
-# a carrier's FULL existing rate/tier set under that name (rather than one
-# flat bucket row) preserves normal weight-tier pricing. The postcode is
+# USER_DEF_TYPE_1 (not CLIENT_ID — that was tried and rejected). CargoWrite
+# takes the first row with that name and applies no weight / volume cut-offs,
+# so each customer gets ONE row of the carrier. The postcode is
 # still written into POSTCODE for human readability — CargoWrite matches on
 # USER_DEF_TYPE_1, this is not a second matching key.
 #
@@ -2323,8 +2344,8 @@ USER_DEF_TYPE_1_CARRIER_EXCEPTIONS = {
 
 
 def append_named_carrier_exceptions(df, country):
-    """Duplicate a carrier's full parcel row set under a customer name in
-    USER_DEF_TYPE_1, for orders CargoWrite can't route by postcode. See
+    """Add one row of a carrier under a customer name in USER_DEF_TYPE_1, for
+    orders CargoWrite can't route by postcode. See
     USER_DEF_TYPE_1_CARRIER_EXCEPTIONS above."""
     rules = USER_DEF_TYPE_1_CARRIER_EXCEPTIONS.get(country.upper())
     if not rules or df is None or df.empty:
@@ -2341,7 +2362,17 @@ def append_named_carrier_exceptions(df, country):
             log.warning('%s: no %s rows for named exception %r', country,
                         rule['carrier_id'], rule['user_def_type_1'])
             continue
-        dup = base.copy()
+        # CargoWrite selects customer rows by name and takes the FIRST one,
+        # without looking at weight or volume — so ONE row: the service that
+        # covers the most parcels (UPSGB STANDARD; the pallet for a pallet-only
+        # customer), its cheapest rate, without weight / volume limits.
+        mp = pd.to_numeric(base['MAX_PARCEL'], errors='coerce').fillna(np.inf)
+        price = pd.to_numeric(base.get('TOTAL_PRICE'), errors='coerce').fillna(np.inf)
+        widest = base[mp == mp.max()]
+        dup = widest.loc[[price[widest.index].idxmin()]].copy()
+        for c in ('MIN_WEIGHT', 'MAX_WEIGHT', 'MIN_VOLUME', 'MAX_VOLUME'):
+            if c in dup.columns:
+                dup[c] = None
         dup['USER_DEF_TYPE_1'] = rule['user_def_type_1']
         dup['POSTCODE'] = rule['postcode']
         extra.append(dup)
@@ -2374,6 +2405,8 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
     cd = carrier_defaults or CARRIER_DEFAULTS
     vl = variables_layout or VARIABLES_LAYOUT
     country = country.upper()
+    if not parcel_postcodes and country in COUNTRY_DEFAULT_POSTCODES:
+        parcel_postcodes = list(COUNTRY_DEFAULT_POSTCODES[country])
     if parcel_postcodes:
         parcel_postcodes = list(parcel_postcodes) + [
             p for p in COUNTRY_EXTRA_POSTCODES.get(country, [])
@@ -2794,7 +2827,7 @@ def build_pallet_df(country, zip_rate_map, band_ceilings,
         prev_ceiling = 0
         for ceil in band_ceilings:
             rate = band_map.get(ceil)
-            if rate is None:
+            if not rate:                  # None, or 0 = no DHL rate for this band
                 continue
             rate_base = round(rate / factor, 6)
             fuel = round(fuel_pct * rate_base, 6)
@@ -2824,9 +2857,10 @@ def build_pallet_df(country, zip_rate_map, band_ceilings,
 
 
 def collapse_pallet_bands(df_pallet):
-    """Within each (country, zip), drop a band whose RATE_BASE equals the band
-    directly below it — CargoWrite matches the first row with MAX_WEIGHT >= wt,
-    so the lighter identical-priced band already covers those shipments."""
+    """Within each (country, zip), merge a band whose RATE_BASE equals the band
+    directly below it into that band: the lighter row's MAX_WEIGHT is raised to
+    the heavier band's, so the weight range stays covered (dropping the band
+    left a gap, e.g. MT 2250-2500 kg) with one row at the same price."""
     if df_pallet.empty:
         return df_pallet
     df = df_pallet.sort_values(['COUNTRYISO2', 'POSTCODE', 'MAX_WEIGHT'],
@@ -2835,6 +2869,7 @@ def collapse_pallet_bands(df_pallet):
     for i, r in df.iterrows():
         key = (r['COUNTRYISO2'], r['POSTCODE'])
         if key == last_key and r['RATE_BASE'] == last_rate:
+            df.at[keep[-1], 'MAX_WEIGHT'] = r['MAX_WEIGHT']
             continue
         keep.append(i)
         last_key, last_rate = key, r['RATE_BASE']
