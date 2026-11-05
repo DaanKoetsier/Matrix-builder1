@@ -2034,6 +2034,15 @@ COUNTRY_DEFAULT_POSTCODES = {
     'CY': ['All'],                                 # whole island, like MT / LU
 }
 
+# Countries written as ONE set of rows without a postcode, with the zones of
+# the pallet file to leave out. Ireland: the pallet file is zoned by county
+# name (CORK, DUBLIN ...), which an Eircode (D02 X285) never matches; the
+# parcel rates are the same in every county, and the pallet takes the most
+# expensive county per weight band. BT is Northern Ireland (GB), not Ireland.
+COUNTRY_WITHOUT_POSTCODE = {
+    'IE': {'BT'},
+}
+
 COUNTRY_EXTRA_POSTCODES = {
     'ES': ['07'],          # Balearic Islands (Mallorca, Ibiza, Menorca)
 }
@@ -2405,6 +2414,15 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
     cd = carrier_defaults or CARRIER_DEFAULTS
     vl = variables_layout or VARIABLES_LAYOUT
     country = country.upper()
+    if country in COUNTRY_WITHOUT_POSTCODE:
+        parcel_postcodes = []
+        if pallet_zones:
+            drop = COUNTRY_WITHOUT_POSTCODE[country]
+            zones = [b for z, b in pallet_zones.items()
+                     if str(z).strip().upper() not in drop]
+            ceilings = set().union(*zones) if zones else set()
+            pallet_zones = {'': {c: max((b.get(c) or 0) for b in zones)
+                                 for c in ceilings}}
     if not parcel_postcodes and country in COUNTRY_DEFAULT_POSTCODES:
         parcel_postcodes = list(COUNTRY_DEFAULT_POSTCODES[country])
     if parcel_postcodes:
@@ -2494,7 +2512,7 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
             frame, parcel_postcodes,
             exclusive=exclusive_postcodes_for(country, parcel_postcodes),
             restrict_carriers=COUNTRY_ISLAND_ONLY_CARRIERS.get(country))
-        if n == -1 and pc_warn is None:
+        if n == -1 and pc_warn is None and country not in COUNTRY_WITHOUT_POSTCODE:
             pc_warn = (f"⚠️ {country}: no postcode list available — parcel rows "
                        f"left blank, so CargoWrite will skip them. Add {country} "
                        f"postcodes to the pallet/postcode file.")
@@ -2839,7 +2857,7 @@ def build_pallet_df(country, zip_rate_map, band_ceilings,
             rows.append({
                 'SITE_ID': 'NLMOE01', 'CLIENT_ID': 'NLFENDER',
                 'CARRIER_ID': 'DHL-FENDER', 'SERVICE_LEVEL': service,
-                'COUNTRYISO2': iso, 'POSTCODE': str(zkey),
+                'COUNTRYISO2': iso, 'POSTCODE': str(zkey) or None,
                 'MIN_WEIGHT': prev_ceiling if prev_ceiling > 0 else None,
                 'MAX_WEIGHT': ceil, 'MIN_VOLUME': None, 'MAX_VOLUME': None,
                 'MIN_PARCEL': None, 'MAX_PARCEL': None,
