@@ -46,6 +46,7 @@ logging.basicConfig(level=logging.INFO)
 ALL_COUNTRIES  = sorted(pl.COUNTRY_CONFIG.keys())
 CARRIER_LABELS = {cid: cfg['label'] for cid, cfg in pl.CARRIER_DEFAULTS.items()}
 FUEL_CARRIERS  = ['UPDE', 'DHL-ROS', 'DPD', 'UPSNL', 'POSTNORD', 'UPSGB', 'UPSWEA']
+EXPRESS_FUEL_KEY = 'UPS EXPRESS'   # fuel_vals key of the UPS express-service fuel
 MAUT_CARRIERS  = ['DPD', 'DHL-ROS']
 EXPRESS_CARRIERS = pl.EXPRESS_CARRIERS   # the only carriers quoting EXPRESS SAVER
 
@@ -78,6 +79,8 @@ def variables_layout(fuel_vals, maut_dhl, maut_dpd, pallet_vals=None):
         ('TOLL UK PALLET',  pv.get('toll',     0.0043)),      # B16
         ('ADMIN PALLET',    pv.get('admin',    46.51)),       # B17
         ('FACTOR DHL',      pv.get('factor',   4.13)),         # B18
+        (pl.EXPRESS_FUEL_VAR, fuel_vals.get(EXPRESS_FUEL_KEY,
+                                            pl.CARRIER_DEFAULTS['UPDE']['express_fuel_pct'])),  # B19
     ]
 
 
@@ -86,6 +89,10 @@ def carrier_defaults(fuel_vals, maut_dhl, maut_dpd):
     for cid, pct in fuel_vals.items():
         if cid in cd:
             cd[cid]['fuel_pct'] = pct
+    if EXPRESS_FUEL_KEY in fuel_vals:
+        for cfg in cd.values():
+            if 'express_fuel_pct' in cfg:
+                cfg['express_fuel_pct'] = fuel_vals[EXPRESS_FUEL_KEY]
     cd['DHL-ROS']['maut_pct'] = maut_dhl
     cd['DPD']['maut_pct']     = maut_dpd
     return pl.sync_carrier_aliases(cd)
@@ -413,6 +420,10 @@ with st.sidebar:
         with cols[i % 2]:
             fuel_vals[cid] = _pct_input(CARRIER_LABELS[cid], f'fuel_{cid}',
                                         pl.CARRIER_DEFAULTS[cid]['fuel_pct'])
+    with cols[len(FUEL_CARRIERS) % 2]:
+        fuel_vals[EXPRESS_FUEL_KEY] = _pct_input(
+            'UPS Express (Express Saver)', 'fuel_UPS_EXPRESS',
+            pl.CARRIER_DEFAULTS['UPDE']['express_fuel_pct'])
 
     maut_dhl = pl.CARRIER_DEFAULTS['DHL-ROS']['maut_pct']
     maut_dpd = pl.CARRIER_DEFAULTS['DPD']['maut_pct']
