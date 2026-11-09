@@ -157,7 +157,9 @@ VARIABLES_LAYOUT = [
 ]
 
 _BASE_CARRIERS   = ['UPDE', 'DPD', 'DHL-ROS', 'UPSNL']
-_SCANDI_CARRIERS = ['UPDE', 'DPD', 'DHL-ROS', 'UPSNL', 'POSTNORD']
+# POSTNORD is not set up for Fender yet: its rates are still parsed and it can
+# be selected per country, but it is not in the default carriers.
+_SCANDI_CARRIERS = ['UPDE', 'DPD', 'DHL-ROS', 'UPSNL']
 _SCANDI_ISO      = {'SE', 'DK', 'NO', 'FI'}
 
 
@@ -908,7 +910,8 @@ def _ceil6(x):
 
 def build_combined_weight_rows(c0, bands, max_parcel, service_level,
                                max_ew=None, postcode=None, user_def_type_2=None,
-                               min_parcel=1, mrpp=None, collapse_parcels=False):
+                               min_parcel=1, mrpp=None, collapse_parcels=False,
+                               over_steps=None):
     """Combined-weight pricing: the band rate is the freight for the WHOLE
     shipment, looked up ONCE on the total payweight — never rate * parcel_count.
 
@@ -942,12 +945,28 @@ def build_combined_weight_rows(c0, bands, max_parcel, service_level,
     instead of one per parcel count: MAX_PARCEL = max_parcel, EACH_WEIGHT = the
     per-box limit, and an explicit MAX_WEIGHT = band_top (CargoWrite checks
     MAX_WEIGHT on its own). Same prices, ~max_parcel times fewer rows.
+
+    `over_steps` (collapse_parcels only): total weights (kg) at which the
+    open-ended "over X / kg" tail gets a row, priced per kg at the step's top
+    weight — up to max_parcel * max_ew. See UPSNL_OVER_STEPS.
     """
     rows = []
     if collapse_parcels:
         assert not mrpp, 'collapse_parcels needs a parcel-count-independent price'
         for band_top, rate, per_kg in bands:
             if per_kg:
+                cap = max_parcel * max_ew if max_ew else None
+                for top in (over_steps or []):
+                    if cap is not None and top > cap + 1e-9:
+                        break
+                    row = {**c0, 'SERVICE_LEVEL': service_level,
+                           'MAX_PARCEL': max_parcel,
+                           'EACH_WEIGHT': _ceil6(max_ew) if max_ew else None,
+                           'MAX_WEIGHT': float(top),
+                           'RATE_BASE': round(rate * top, 4)}
+                    if postcode is not None:
+                        row['POSTCODE'] = postcode
+                    rows.append(row)
                 continue
             row = {**c0, 'SERVICE_LEVEL': service_level,
                    'MAX_PARCEL': max_parcel,
@@ -1013,13 +1032,13 @@ def build_rows_upde(rate_data, country_cfg):
         bands = collapse_same_rate_tiers(tiers)
         rows += build_combined_weight_rows(
             c0, bands, max_parcel=1, service_level='STANDARD',
-            max_ew=ups_ew, postcode=pc, user_def_type_2='single')
+            max_ew=ups_ew, postcode=pc)
 
     for pc, tiers in _upde_service_buckets(rate_data, 'STDM', country_cfg):
         bands = collapse_same_rate_tiers(tiers)
         rows += build_combined_weight_rows(
             c0, bands, max_p, service_level='STANDARD',
-            max_ew=ups_ew, postcode=pc, user_def_type_2='multi', min_parcel=2)
+            max_ew=ups_ew, postcode=pc, min_parcel=2)
 
     flat = rate_data.get('EXPSAVER_7R9W62')
     if flat is not None:
@@ -1091,6 +1110,42 @@ def build_rows_dpd(rate_data, country_cfg):
     return rows
 
 
+# UPSNL above 70 kg total ("Over 70 - per kg"): rows in steps up to the
+# maximum shipment, each priced per kg at its top weight. They are only kept
+# where UPSNL is the only carrier of a postcode and there is no pallet (islands,
+# CY, SM); elsewhere the other carriers or the pallet cover heavy shipments.
+UPSNL_OVER_STEPS = [100, 150, 200, 300, 500, 1000, 1400]
+UPSNL_TABLE_MAX_KG = 70.0
+
+
+def keep_upsnl_over_where_alone(df):
+    """Drop the UPSNL over-70 kg rows at every postcode that has another
+    carrier (another parcel carrier or the DHL pallet)."""
+    if df is None or df.empty:
+        return df
+    w = pd.to_numeric(df['MAX_WEIGHT'], errors='coerce')
+    over = (df['CARRIER_ID'] == 'UPSNL') & (w > UPSNL_TABLE_MAX_KG + 1e-6)
+    if not over.any():
+        return df
+    key = (df['COUNTRYISO2'].astype(str) + '|'
+           + df['POSTCODE'].map(lambda v: '' if v is None or pd.isna(v) else str(v)))
+    plain = df['USER_DEF_TYPE_1'].isna() if 'USER_DEF_TYPE_1' in df.columns else True
+    price = pd.to_numeric(df.get('TOTAL_PRICE'), errors='coerce')
+    others = (df['CARRIER_ID'] != 'UPSNL') & plain & (price < 999999)
+    shared = set(key[others])
+    return df[~(over & key.isin(shared))].reset_index(drop=True)
+
+
+def drop_upsnl_over(df):
+    """Drop all UPSNL over-70 kg rows (extended / optimized stages, whose rows
+    are not split per postcode yet)."""
+    if df is None or df.empty:
+        return df
+    w = pd.to_numeric(df['MAX_WEIGHT'], errors='coerce')
+    return df[~((df['CARRIER_ID'] == 'UPSNL')
+                & (w > UPSNL_TABLE_MAX_KG + 1e-6))].reset_index(drop=True)
+
+
 def build_rows_upsnl(rate_data, country_cfg):
     # EXPRESS SAVER is billed on the TOTAL shipment payweight (one lookup),
     # so every zone uses combined-weight rows (no per-parcel * mp, no max_ew cap).
@@ -1110,7 +1165,8 @@ def build_rows_upsnl(rate_data, country_cfg):
         # total weight only: one row per band covers every parcel count.
         return build_combined_weight_rows(
             c0, bands_by_zone.get(zone, []), max_p, 'EXPRESS SAVER',
-            max_ew=max_ew, postcode=pc, collapse_parcels=True)
+            max_ew=max_ew, postcode=pc, collapse_parcels=True,
+            over_steps=UPSNL_OVER_STEPS)
 
     # No zone table at all → no postcode, use first available zone
     if not zones:
@@ -1434,7 +1490,7 @@ def write_matrix_excel(df, output_path, country_cfg,
     if 'COUNTRYISO2' in df.columns:
         df['_ISO2'] = df['COUNTRYISO2']
         df['COUNTRYISO2'] = df['COUNTRYISO2'].map(_iso3)
-    df_sorted = df.sort_values('TOTAL_PRICE', kind='stable').reset_index(drop=True)
+    df_sorted = _output_order(df).reset_index(drop=True)
     bucket_fill = PatternFill('solid', fgColor='FFF2CC')   # soft amber = catch-all bucket
     for ri, row_dict in enumerate(df_sorted.to_dict('records'), start=2):
         is_bucket = bool(row_dict.get('_is_bucket'))
@@ -2056,7 +2112,13 @@ COUNTRY_EXCLUSIVE_POSTCODES = {
     'ES': {pc: 'UPSNL' for pc in ('07', '35', '38', '51', '52')},
     # Portugal: Madeira and the Azores (all 9xxx postcodes) — UPSNL only.
     'PT': {f'9{d}': 'UPSNL' for d in range(10)},
+    # Italy: Sardinia (07, 08, 09) and Sicily (90-98) — UPSNL only for parcels;
+    # the DHL pallet stays (COUNTRY_EXCLUSIVE_KEEP_PALLET).
+    'IT': {pc: 'UPSNL' for pc in ['07', '08', '09'] + [str(n) for n in range(90, 99)]},
 }
+
+# Countries whose exclusive postcodes above still get DHL pallet rows.
+COUNTRY_EXCLUSIVE_KEEP_PALLET = {'IT'}
 
 # Countries whose exclusive codes above only apply to postcodes that are actually
 # in the pallet/postcode file — they are never added on top of it. (Empty: PT's
@@ -2352,6 +2414,65 @@ USER_DEF_TYPE_1_CARRIER_EXCEPTIONS = {
 }
 
 
+# Prio 5 orders: CargoWrite picks them by USER_DEF_TYPE_1 'PRIO' and
+# USER_DEF_TYPE_2 '5' (like a customer name), so one row per country with the
+# parcel carrier normally chosen there (never express), and one UPSNL row per
+# island postcode (COUNTRY_EXCLUSIVE_POSTCODES -> UPSNL). Yellow, at the top.
+PRIO_CARRIER = {
+    **{iso: ('DPD', 'PARCEL', 31.5) for iso in (
+        'AT', 'BE', 'ES', 'EE', 'FR', 'HR', 'HU', 'IE', 'IT', 'LT', 'LU', 'LV',
+        'NL', 'PL', 'PT', 'SK', 'SI')},
+    **{iso: ('UPDE', 'STANDARD', 70.0) for iso in (
+        'DE', 'DK', 'FI', 'SE', 'RO', 'BG', 'CZ', 'GR', 'LI')},
+    **{iso: ('UPSNL', 'EXPRESS SAVER', 70.0) for iso in ('CY', 'MT', 'SM')},
+    'GB': ('UPSGB', 'STANDARD', 70.0),
+    'CH': ('UPSWEA', 'WORLD SHIP', 31.5),
+    'NO': ('UPSWEA', 'WORLD SHIP', 31.5),
+}
+PRIO_FIELDS = {'USER_DEF_TYPE_1': 'PRIO', 'USER_DEF_TYPE_2': '5',
+               'USER_DEF_NUM_1': '0.0000000000001'}
+
+
+def append_prio_rows(df, country):
+    """Add the Prio 5 rows of `country` (see PRIO_CARRIER)."""
+    iso = country.upper()
+    if df is None or df.empty or iso not in PRIO_CARRIER:
+        return df
+    site = df['SITE_ID'].dropna().iloc[0] if df['SITE_ID'].notna().any() else 'NLMOE01'
+    client = df['CLIENT_ID'].dropna().iloc[0] if df['CLIENT_ID'].notna().any() else 'NLFENDER'
+    islands = [pc for pc, car in COUNTRY_EXCLUSIVE_POSTCODES.get(iso, {}).items()
+               if car == 'UPSNL']
+    rows = [(pc, ('UPSNL', 'EXPRESS SAVER', 70.0)) for pc in islands]
+    rows.append((None, PRIO_CARRIER[iso]))
+    out = []
+    for pc, (car, svc, each) in rows:
+        row = {c: None for c in df.columns}
+        row.update({'SITE_ID': site, 'CLIENT_ID': client, 'CARRIER_ID': car,
+                    'SERVICE_LEVEL': svc, 'COUNTRYISO2': iso, 'POSTCODE': pc,
+                    'EACH_WEIGHT': each, **PRIO_FIELDS})
+        if '_is_bucket' in df.columns:
+            row['_is_bucket'] = True
+        out.append(row)
+    prio = pd.DataFrame(out, columns=df.columns)
+    if '_is_bucket' not in df.columns:
+        df = df.copy(); df['_is_bucket'] = False
+        prio['_is_bucket'] = True
+    return pd.concat([df, prio], ignore_index=True)
+
+
+def _output_order(df, by=('TOTAL_PRICE',)):
+    """Sort for writing: Prio rows first, then by `by` (price)."""
+    top = (df['USER_DEF_TYPE_1'].astype(str) == PRIO_FIELDS['USER_DEF_TYPE_1']
+           if 'USER_DEF_TYPE_1' in df.columns else pd.Series(False, index=df.index))
+    keys = list(by)
+    if keys and keys[0] == 'COUNTRYISO2':
+        keys = ['COUNTRYISO2', '_prio_last'] + keys[1:]
+    else:
+        keys = ['_prio_last'] + keys
+    return (df.assign(_prio_last=~top).sort_values(keys, kind='stable')
+              .drop(columns='_prio_last'))
+
+
 def append_named_carrier_exceptions(df, country):
     """Add one row of a carrier under a customer name in USER_DEF_TYPE_1, for
     orders CargoWrite can't route by postcode. See
@@ -2519,7 +2640,8 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
         elif n > 0:
             log.info('%s: exploded %d blank parcel rows × %d postcodes',
                      country, n, len([p for p in (parcel_postcodes or []) if str(p).strip()]))
-        return exploded.drop(columns='_excl_only', errors='ignore')
+        return keep_upsnl_over_where_alone(
+            exploded.drop(columns='_excl_only', errors='ignore'))
 
     if has_pallet:
         # Merge pallet rows into each stage (pallet rows never dominate parcel
@@ -2534,10 +2656,11 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
             ext_all = append_standard_exceptions(ext_all, has_pallet=True)
             opt_all = append_standard_exceptions(opt_all, has_pallet=True)
             min_all = append_standard_exceptions(min_all, has_pallet=True)
-            ext_all = append_named_carrier_exceptions(ext_all, country)
-            opt_all = append_named_carrier_exceptions(opt_all, country)
-            min_all = append_named_carrier_exceptions(min_all, country)
+            ext_all = append_prio_rows(append_named_carrier_exceptions(ext_all, country), country)
+            opt_all = append_prio_rows(append_named_carrier_exceptions(opt_all, country), country)
+            min_all = append_prio_rows(append_named_carrier_exceptions(min_all, country), country)
         min_all = _explode_min(min_all)
+        ext_all, opt_all = drop_upsnl_over(ext_all), drop_upsnl_over(opt_all)
         write_matrix_with_formulas(ext_all, ext_path, cfg, cd, vl, pallet_maut,
                                    pallet_defaults, pallet_overrides=pallet_overrides,
                                    all_country_maut=all_country_maut, gbp_to_eur=gbp_to_eur)
@@ -2557,10 +2680,12 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
             df_ext_final = append_standard_exceptions(df_ext_final, has_pallet=False)
             df_opt_final = append_standard_exceptions(df_opt_final, has_pallet=False)
             df_min_final = append_standard_exceptions(df_min_final, has_pallet=False)
-            df_ext_final = append_named_carrier_exceptions(df_ext_final, country)
-            df_opt_final = append_named_carrier_exceptions(df_opt_final, country)
-            df_min_final = append_named_carrier_exceptions(df_min_final, country)
+            df_ext_final = append_prio_rows(append_named_carrier_exceptions(df_ext_final, country), country)
+            df_opt_final = append_prio_rows(append_named_carrier_exceptions(df_opt_final, country), country)
+            df_min_final = append_prio_rows(append_named_carrier_exceptions(df_min_final, country), country)
         df_min_final = _explode_min(df_min_final)
+        df_ext_final = drop_upsnl_over(df_ext_final)
+        df_opt_final = drop_upsnl_over(df_opt_final)
         write_matrix_excel(df_ext_final, ext_path, cfg, cd, vl,
                            all_country_maut=all_country_maut, pallet_overrides=pallet_overrides,
                            pallet_maut_table=pallet_maut, gbp_to_eur=gbp_to_eur)
@@ -2582,9 +2707,10 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
             df     = append_standard_exceptions(df, has_pallet=False)
             df_opt = append_standard_exceptions(df_opt, has_pallet=False)
             df_min = append_standard_exceptions(df_min, has_pallet=False)
-            df     = append_named_carrier_exceptions(df, country)
-            df_opt = append_named_carrier_exceptions(df_opt, country)
-            df_min = append_named_carrier_exceptions(df_min, country)
+            df     = append_prio_rows(append_named_carrier_exceptions(df, country), country)
+            df_opt = append_prio_rows(append_named_carrier_exceptions(df_opt, country), country)
+            df_min = append_prio_rows(append_named_carrier_exceptions(df_min, country), country)
+        df, df_opt = drop_upsnl_over(df), drop_upsnl_over(df_opt)
         write_matrix_excel(df, ext_path, cfg, cd, vl,
                            all_country_maut=all_country_maut, pallet_overrides=pallet_overrides,
                            pallet_maut_table=pallet_maut, gbp_to_eur=gbp_to_eur)
@@ -2835,7 +2961,8 @@ def build_pallet_df(country, zip_rate_map, band_ceilings,
     service   = pd_def['service_level']
     maut_known = iso in mt
 
-    excl_codes = {c.upper() for c in COUNTRY_EXCLUSIVE_POSTCODES.get(iso, {})}
+    excl_codes = ({c.upper() for c in COUNTRY_EXCLUSIVE_POSTCODES.get(iso, {})}
+                  if iso not in COUNTRY_EXCLUSIVE_KEEP_PALLET else set())
 
     rows = []
     for zkey in sorted(zip_rate_map, key=lambda z: (len(str(z)), str(z))):
@@ -2963,7 +3090,7 @@ def write_matrix_numeric(df, output_path, country_cfg, variables_layout=None,
     if 'COUNTRYISO2' in df.columns:
         df['_ISO2'] = df['COUNTRYISO2']
         df['COUNTRYISO2'] = df['COUNTRYISO2'].map(_iso3)
-    df_sorted = df.sort_values('TOTAL_PRICE', kind='stable').reset_index(drop=True)
+    df_sorted = _output_order(df).reset_index(drop=True)
     fill = PatternFill('solid', fgColor='FFF2CC')
 
     L = _letter_map(order)
@@ -3077,8 +3204,8 @@ def write_combined_matrix(frames, output_path, variables_layout=None,
             f"select fewer countries.")
     has_pallet = 'MOBILITY' in combined.columns
     order = PALLET_COLUMN_ORDER if has_pallet else COLUMN_ORDER
-    combined = combined.sort_values(['COUNTRYISO2', 'TOTAL_PRICE'],
-                                    kind='stable').reset_index(drop=True)
+    combined = _output_order(combined, by=('COUNTRYISO2', 'TOTAL_PRICE')
+                             ).reset_index(drop=True)
     if formulas and has_pallet:
         write_matrix_with_formulas(combined, output_path, {'iso2': 'ALL'},
                                    carrier_defaults, variables_layout,
@@ -3182,7 +3309,7 @@ def write_matrix_with_formulas(df, output_path, country_cfg,
     for ci, col in enumerate(order, 1):
         ws.cell(1, ci, col)
 
-    df_sorted = df.sort_values('TOTAL_PRICE', kind='stable').reset_index(drop=True)
+    df_sorted = _output_order(df).reset_index(drop=True)
     fill = PatternFill('solid', fgColor='FFF2CC')
 
     L_RATE  = L['RATE_BASE']
