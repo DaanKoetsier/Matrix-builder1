@@ -3086,11 +3086,10 @@ def write_matrix_numeric(df, output_path, country_cfg, variables_layout=None,
     wb = Workbook(write_only=True)
     ws = wb.create_sheet(f"{_iso3(country_cfg.get('iso2', 'ALL'))} Matrix")
     ws.append(list(order))
-    df = df.copy()
     if 'COUNTRYISO2' in df.columns:
-        df['_ISO2'] = df['COUNTRYISO2']
-        df['COUNTRYISO2'] = df['COUNTRYISO2'].map(_iso3)
+        df = df.assign(_ISO2=df['COUNTRYISO2'], COUNTRYISO2=df['COUNTRYISO2'].map(_iso3))
     df_sorted = _output_order(df).reset_index(drop=True)
+    del df
     fill = PatternFill('solid', fgColor='FFF2CC')
 
     L = _letter_map(order)
@@ -3109,7 +3108,11 @@ def write_matrix_numeric(df, output_path, country_cfg, variables_layout=None,
     r_admin       = _find_var_row(vl, 'ADMIN PALLET')
     r_factor      = _find_var_row(vl, 'FACTOR DHL')
 
-    for ri, rec in enumerate(df_sorted.to_dict('records'), start=2):
+    # One row at a time: to_dict('records') built a dict for every row at once
+    # (over a GB for the all-country combined export).
+    cols = list(df_sorted.columns)
+    for ri, row in enumerate(df_sorted.itertuples(index=False, name=None), start=2):
+        rec = dict(zip(cols, row))
         carrier   = rec.get('CARRIER_ID')
         iso       = rec.get('_ISO2')
         is_bucket = bool(rec.get('_is_bucket'))
