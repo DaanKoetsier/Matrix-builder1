@@ -35,6 +35,7 @@ CARRIER_DEFAULTS = {
         'volume_divisor': 167,
         'fuel_pct': 0.27,
         'fuel_variables_ref': 'B1',
+        'express_fuel_pct': 0.27,   # FUEL UPS EXPRESS (EXPRESS SAVER / SAVER)
         'maut_pct': 0.0,
         'maut_variables_ref': None,
         'linehaul_per_parcel': 1.31,
@@ -46,6 +47,7 @@ CARRIER_DEFAULTS = {
         'volume_divisor': 167,
         'fuel_pct': 0.27,
         'fuel_variables_ref': 'B4',
+        'express_fuel_pct': 0.27,   # FUEL UPS EXPRESS (EXPRESS SAVER / SAVER)
         'maut_pct': 0.0,
         'maut_variables_ref': None,
         'linehaul_per_parcel': 0.0,
@@ -90,6 +92,7 @@ CARRIER_DEFAULTS = {
         'volume_divisor': 167,
         'fuel_pct': 0.27,
         'fuel_variables_ref': 'B6',
+        'express_fuel_pct': 0.27,   # FUEL UPS EXPRESS (EXPRESS SAVER / SAVER)
         'maut_pct': 0.0,
         'maut_variables_ref': None,
         'linehaul_per_parcel': 3.9,
@@ -130,6 +133,23 @@ UPDE_7R9W62_SERVICE = 'SAVER'
 CARRIER_DEFAULTS['UPSDE SINGLE'] = {**CARRIER_DEFAULTS['UPDE'],
                                     'label': 'UPS DE 7R9W62', 'services': ['SAVER']}
 SELECTABLE_CARRIERS = [c for c in CARRIER_DEFAULTS if c not in CARRIER_ALIASES]
+
+# UPS express services (UPDE / UPSNL / UPSGB EXPRESS SAVER, the 7R9W62 'SAVER'
+# account) have their own fuel surcharge: 'express_fuel_pct' of the carrier,
+# the 'FUEL UPS EXPRESS' cell of the Variables sheet.
+EXPRESS_SERVICES = {'EXPRESS SAVER', 'SAVER'}
+EXPRESS_FUEL_VAR = 'FUEL UPS EXPRESS'
+
+
+def _fuel_pct(cfg, service):
+    """Fuel % of a carrier's row: the express fuel for its express services."""
+    if service in EXPRESS_SERVICES and 'express_fuel_pct' in cfg:
+        return cfg['express_fuel_pct']
+    return cfg['fuel_pct']
+
+
+def _is_express_row(cfg, service):
+    return service in EXPRESS_SERVICES and 'express_fuel_pct' in cfg
 
 
 def sync_carrier_aliases(cd):
@@ -1361,7 +1381,7 @@ def compute_numeric_totals(df, carrier_defaults=None):
         df['MAX_WEIGHT'] = product
 
     df['FUEL'] = df.apply(
-        lambda r: cd[r['CARRIER_ID']]['fuel_pct'] * r['RATE_BASE'], axis=1
+        lambda r: _fuel_pct(cd[r['CARRIER_ID']], r['SERVICE_LEVEL']) * r['RATE_BASE'], axis=1
     ).round(4)
     df['MAUT'] = df.apply(
         lambda r: cd[r['CARRIER_ID']]['maut_pct'] * r['RATE_BASE'], axis=1
@@ -1449,7 +1469,9 @@ def _build_formulas_for_row(row_dict, excel_row, carrier_defaults=None, lookup=N
             f['MAX_WEIGHT'] = f"={L['MAX_PARCEL']}{excel_row}*{L['EACH_WEIGHT']}{excel_row}"
         f['MAX_VOLUME']  = f"={L['MAX_WEIGHT']}{excel_row}/{cfg['volume_divisor']}"
         f['EACH_VOLUME'] = f"={L['EACH_WEIGHT']}{excel_row}/{cfg['volume_divisor']}"
-    if cfg.get('fuel_variables_ref'):
+    if _is_express_row(cfg, row_dict.get('SERVICE_LEVEL')) and lookup.get('fuel_express'):
+        f['FUEL'] = f"=Variables!$B${lookup['fuel_express']}*{rb2}{excel_row}"
+    elif cfg.get('fuel_variables_ref'):
         ref = cfg['fuel_variables_ref']
         f['FUEL'] = f"=Variables!${ref[0]}${ref[1:]}*{rb2}{excel_row}"
     # DPD / DHL-ROS MAUT varies per country — look up this row's own country
@@ -1898,7 +1920,7 @@ def add_overflow_buckets(df, rules, carrier_defaults=None, country_cfg=None):
             for n in range(1, max_p + 1):
                 row = _common(site, client, carrier, country)
                 rb  = round(rate * n, 4)
-                fuel = round(cd[carrier]['fuel_pct'] * rb, 4)
+                fuel = round(_fuel_pct(cd[carrier], svc) * rb, 4)
                 maut = round(cd[carrier]['maut_pct'] * rb, 4)
                 lh_pp = cd[carrier]['linehaul_per_parcel']
                 lh   = round(lh_pp * n, 4) if lh_pp > 0 else None
@@ -2852,6 +2874,9 @@ def _build_all_country_variables(vars_rows, all_country_maut=None,
     vars_rows = list(vars_rows)
     lookup = {}
 
+    vars_rows, lookup['fuel_express'] = _ensure_var(
+        vars_rows, EXPRESS_FUEL_VAR, CARRIER_DEFAULTS['UPDE']['express_fuel_pct'])
+
     vars_rows.append((None, None))
     vars_rows.append(('GBP TO EUR', gbp_to_eur))
     lookup['gbp_eur'] = len(vars_rows)
@@ -3149,6 +3174,9 @@ def write_matrix_numeric(df, output_path, country_cfg, variables_layout=None,
                 formulas['ADMIN'] = f"=Variables!$B${r_admin}"
         elif not sentinel:
             fuel_row = fuel_rows.get(carrier)
+            if (_is_express_row(CARRIER_DEFAULTS.get(carrier, {}), rec.get('SERVICE_LEVEL'))
+                    and lookup.get('fuel_express')):
+                fuel_row = lookup['fuel_express']
             if fuel_row and 'FUEL' in order:
                 formulas['FUEL'] = f"=Variables!$B${fuel_row}*{rb2_letter}{ri}"
             maut_key = {'DPD': 'maut_dpd', 'DHL-ROS': 'maut_dhlros'}.get(carrier)
@@ -3381,6 +3409,8 @@ def write_matrix_with_formulas(df, output_path, country_cfg,
                 if L_MV: formulas['MAX_VOLUME']  = f"={L_MW}{ri}/{cfg.get('volume_divisor', 1)}"
                 if L_EV: formulas['EACH_VOLUME'] = f"={L_EW}{ri}/{cfg.get('volume_divisor', 1)}"
             fuel_row = fuel_rows.get(carrier)
+            if _is_express_row(cfg, rec.get('SERVICE_LEVEL')) and lookup.get('fuel_express'):
+                fuel_row = lookup['fuel_express']
             if fuel_row:
                 formulas['FUEL'] = f"=Variables!$B${fuel_row}*{rb2}{ri}"
             elif cfg.get('fuel_variables_ref'):

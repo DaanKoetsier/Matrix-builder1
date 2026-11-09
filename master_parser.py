@@ -415,7 +415,9 @@ def parse_master_rate_card(path):
     ws = sheet('PARCEL - DHL - Other countries')
     if ws:
         dhl_freight_data = _parse_dhl_other(ws)
-        master['DHL-FREIGHT'] = dhl_freight_data 
+        # DHL-ROS (all non-BNL countries) and DHL-FREIGHT read the same sheet.
+        master['DHL']['other'] = dhl_freight_data
+        master['DHL-FREIGHT'] = dhl_freight_data
     
     ws = sheet('PARCEL - DHL - BNL')
     if ws:
