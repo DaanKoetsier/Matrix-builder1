@@ -157,7 +157,9 @@ VARIABLES_LAYOUT = [
 ]
 
 _BASE_CARRIERS   = ['UPDE', 'DPD', 'DHL-ROS', 'UPSNL']
-_SCANDI_CARRIERS = ['UPDE', 'DPD', 'DHL-ROS', 'UPSNL', 'POSTNORD']
+# POSTNORD is not set up for Fender yet: its rates are still parsed and it can
+# be selected per country, but it is not in the default carriers.
+_SCANDI_CARRIERS = ['UPDE', 'DPD', 'DHL-ROS', 'UPSNL']
 _SCANDI_ISO      = {'SE', 'DK', 'NO', 'FI'}
 
 
@@ -1013,13 +1015,13 @@ def build_rows_upde(rate_data, country_cfg):
         bands = collapse_same_rate_tiers(tiers)
         rows += build_combined_weight_rows(
             c0, bands, max_parcel=1, service_level='STANDARD',
-            max_ew=ups_ew, postcode=pc, user_def_type_2='single')
+            max_ew=ups_ew, postcode=pc)
 
     for pc, tiers in _upde_service_buckets(rate_data, 'STDM', country_cfg):
         bands = collapse_same_rate_tiers(tiers)
         rows += build_combined_weight_rows(
             c0, bands, max_p, service_level='STANDARD',
-            max_ew=ups_ew, postcode=pc, user_def_type_2='multi', min_parcel=2)
+            max_ew=ups_ew, postcode=pc, min_parcel=2)
 
     flat = rate_data.get('EXPSAVER_7R9W62')
     if flat is not None:
@@ -2056,7 +2058,13 @@ COUNTRY_EXCLUSIVE_POSTCODES = {
     'ES': {pc: 'UPSNL' for pc in ('07', '35', '38', '51', '52')},
     # Portugal: Madeira and the Azores (all 9xxx postcodes) — UPSNL only.
     'PT': {f'9{d}': 'UPSNL' for d in range(10)},
+    # Italy: Sardinia (07, 08, 09) and Sicily (90-98) — UPSNL only for parcels;
+    # the DHL pallet stays (COUNTRY_EXCLUSIVE_KEEP_PALLET).
+    'IT': {pc: 'UPSNL' for pc in ['07', '08', '09'] + [str(n) for n in range(90, 99)]},
 }
+
+# Countries whose exclusive postcodes above still get DHL pallet rows.
+COUNTRY_EXCLUSIVE_KEEP_PALLET = {'IT'}
 
 # Countries whose exclusive codes above only apply to postcodes that are actually
 # in the pallet/postcode file — they are never added on top of it. (Empty: PT's
@@ -2835,7 +2843,8 @@ def build_pallet_df(country, zip_rate_map, band_ceilings,
     service   = pd_def['service_level']
     maut_known = iso in mt
 
-    excl_codes = {c.upper() for c in COUNTRY_EXCLUSIVE_POSTCODES.get(iso, {})}
+    excl_codes = ({c.upper() for c in COUNTRY_EXCLUSIVE_POSTCODES.get(iso, {})}
+                  if iso not in COUNTRY_EXCLUSIVE_KEEP_PALLET else set())
 
     rows = []
     for zkey in sorted(zip_rate_map, key=lambda z: (len(str(z)), str(z))):
