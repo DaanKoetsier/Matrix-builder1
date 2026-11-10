@@ -1,5 +1,9 @@
-streamlit>=1.45.0
-pandas>=2.0.0
-openpyxl>=3.1.0
-numpy>=1.26.0
-lxml>=4.9.0
+# Pinned to the versions the app runs on (Streamlit Cloud, Python 3.14), so a
+# new release cannot break it unnoticed. Update deliberately and test first.
+streamlit==1.67.0
+pandas==3.1.1
+numpy==2.5.4
+openpyxl==3.1.5
+lxml==6.1.3
+# pyarrow 26 segfaults (apache/arrow#50471); Streamlit Cloud swaps it for <25
+pyarrow==24.0.0
