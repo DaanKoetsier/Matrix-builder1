@@ -1685,7 +1685,7 @@ def optimize_globally(input_path, output_path):
 #
 # CargoWrite matches an order by scanning the matrix top-to-bottom (cheapest
 # first) and taking the first row whose constraints all fit. A constraint such
-# as USER_DEF_TYPE_1 (a max dimension) means "this row only matches parcels at
+# as USER_DEF_NUM_1 (a max dimension) means "this row only matches parcels at
 # or under this size". Orders that exceed it must still match *something*, so
 # every constrained row needs a cheaper-to-build "bucket" twin lower down that
 # drops the limit, flags the row for oversight, and adds a surcharge.
@@ -1703,7 +1703,7 @@ def optimize_globally(input_path, output_path):
 #     'countries':      [],            # scope; [] = all countries
 #     'service_levels': [],            # scope; [] = all services
 #     'mode':           'stamp',       # (default)
-#     'constraint_col': 'USER_DEF_TYPE_1',
+#     'constraint_col': 'USER_DEF_NUM_1',
 #     'normal_value':   1.5,           # stamped on the cheap base rows
 #     'bucket_value':   None,          # value on the bucket twin (None = catch-all)
 #     'flag_col':       'AWKWARD',     # column flagged on the bucket twin
@@ -1760,9 +1760,14 @@ def _recompute_total(df):
 
 
 # Small-parcel tariffs with their own size limit: DPD small (<= 3 kg) is
-# limited to 140 cm (longest side + 2x the two shorter sides); USER_DEF_TYPE_1
+# limited to 140 cm (longest side + 2x the two shorter sides); USER_DEF_NUM_1
 # only holds one length, so 1.4 m instead of DPD's 1.75 m.
 SMALL_TARIFF_SIZE = {'DPD': (3.0, 1.4)}
+# Column of the size limit (max length, m): USER_DEF_NUM_1, CargoWrite's
+# numeric field (USER_DEF_TYPE_1 is text). USER_DEF_TYPE_1 is still accepted
+# for rules written for the old layout.
+SIZE_LIMIT_COL = 'USER_DEF_NUM_1'
+SIZE_LIMIT_COLS = {SIZE_LIMIT_COL, 'USER_DEF_TYPE_1'}
 
 
 def apply_exceptions(df, rules):
@@ -1837,7 +1842,7 @@ def apply_exceptions(df, rules):
         # ---- mode == 'stamp' (original behaviour) ----
         # 1) stamp the normal limit onto the cheap base rows
         df.loc[scope, ccol] = rule['normal_value']
-        if ccol == 'USER_DEF_TYPE_1' and 'EACH_WEIGHT' in df.columns:
+        if ccol in SIZE_LIMIT_COLS and 'EACH_WEIGHT' in df.columns:
             ew = pd.to_numeric(df['EACH_WEIGHT'], errors='coerce')
             for car, (max_kg, size) in SMALL_TARIFF_SIZE.items():
                 small = scope & (df['CARRIER_ID'] == car) & (ew <= max_kg + 1e-9)
@@ -2526,6 +2531,9 @@ def append_named_carrier_exceptions(df, country):
             if c in dup.columns:
                 dup[c] = None
         dup['USER_DEF_TYPE_1'] = rule['user_def_type_1']
+        # no size limit on a customer row (picked by name, takes everything)
+        if SIZE_LIMIT_COL in dup.columns:
+            dup[SIZE_LIMIT_COL] = None
         dup['POSTCODE'] = rule['postcode']
         extra.append(dup)
     if not extra:
