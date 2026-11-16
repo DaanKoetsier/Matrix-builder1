@@ -180,7 +180,7 @@ def exception_rules_from_editor(edited_df):
             'carriers':       [carrier] if carrier and carrier != '(all)' else [],
             'countries':      [c.strip() for c in country.split(',') if c.strip()],
             'service_levels': [s.strip() for s in service.split(',') if s.strip()],
-            'constraint_col': 'USER_DEF_TYPE_1',
+            'constraint_col': 'USER_DEF_NUM_1',
             'normal_value':   limit,
             'bucket_value':   None,
             'flag_col':       'AWKWARD',
