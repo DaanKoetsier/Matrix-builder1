@@ -190,6 +190,10 @@ output gets:
 - a **catch-all bucket twin** (limit blank, surcharge added), highlighted in
   **amber** for oversight
 
+Defaults: every UPS carrier (UPDE incl. its 7R9W62 account, UPSNL, UPSGB,
+UPSWEA) 1.5 m, +€6 per parcel above it; DPD 1.75 m, +€46.50; DHL-ROS 1 m,
++€8.63. The limit is written to `USER_DEF_NUM_1`.
+
 > **Note (changed):** the old standalone `AWKWARD` flag column has been removed
 > from the output. Bucket / catch-all rows are now identified by their **amber
 > highlight** rather than a `Y` in a column. The rule engine still supports a
