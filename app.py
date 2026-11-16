@@ -146,15 +146,15 @@ def file_bytes(p):
 
 
 DEFAULT_EXCEPTIONS = pd.DataFrame([
-    {'Enabled': True, 'Carrier': 'UPSGB', 'Country (blank=all)': '',
+    {'Enabled': True, 'Carrier': c, 'Country (blank=all)': '',
      'Service level (blank=all)': '',
-     'Size limit (m)': 1.5,  'Surcharge €/parcel': 6.0},
-    {'Enabled': True, 'Carrier': 'DPD',  'Country (blank=all)': '',
-     'Service level (blank=all)': '',
-     'Size limit (m)': 1.75, 'Surcharge €/parcel': 46.5},
-     {'Enabled': True, 'Carrier': 'DHL-ROS',  'Country (blank=all)': '',
-     'Service level (blank=all)': '',
-     'Size limit (m)': 1, 'Surcharge €/parcel': 8.63},
+     'Size limit (m)': lim, 'Surcharge €/parcel': sur}
+    for c, lim, sur in (
+        # every UPS carrier: 1.5 m, +€6 per parcel above it
+        ('UPDE', 1.5, 6.0), ('UPSNL', 1.5, 6.0), ('UPSGB', 1.5, 6.0),
+        ('UPSWEA', 1.5, 6.0),
+        ('DPD', 1.75, 46.5),
+        ('DHL-ROS', 1.0, 8.63))
 ])
 
 
@@ -177,7 +177,10 @@ def exception_rules_from_editor(edited_df):
         rules.append({
             'enabled':        True,
             'label':          f'Oversize {carrier or "ALL"}',
-            'carriers':       [carrier] if carrier and carrier != '(all)' else [],
+            # a carrier includes its aliases (UPDE: the UPSDE SINGLE account)
+            'carriers':       ([carrier] + [a for a, base in pl.CARRIER_ALIASES.items()
+                                            if base == carrier]
+                               if carrier and carrier != '(all)' else []),
             'countries':      [c.strip() for c in country.split(',') if c.strip()],
             'service_levels': [s.strip() for s in service.split(',') if s.strip()],
             'constraint_col': 'USER_DEF_NUM_1',
@@ -602,8 +605,7 @@ with st.expander("📐 Exceptions & buckets — oversize / surcharges per carrie
             'Country (blank=all)': st.column_config.TextColumn(
                 help="ISO2 code(s), comma-separated. Blank = all countries.", width="small"),
             'Service level (blank=all)': st.column_config.TextColumn(
-                help="e.g. STANDARD. Comma-separated. Blank = all services. "
-                     "UPDE oversize defaults to STANDARD only (excludes Express Saver).",
+                help="e.g. STANDARD. Comma-separated. Blank = all services.",
                 width="small"),
             'Size limit (m)': st.column_config.NumberColumn(
                 format="%.2f", help="Stamped on the normal (cheap) rows."),

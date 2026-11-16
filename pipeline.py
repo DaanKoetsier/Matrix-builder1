@@ -42,7 +42,7 @@ CARRIER_DEFAULTS = {
     },
     'UPSNL': {
         'label': 'UPS NL',
-        'services': ['EXPRESS SAVER'],
+        'services': ['SAVER'],
         'has_postcode': True,
         'volume_divisor': 167,
         'fuel_pct': 0.27,
@@ -54,7 +54,7 @@ CARRIER_DEFAULTS = {
     },
     'DPD': {
         'label': 'DPD',
-        'services': ['PARCEL'],
+        'services': ['STANDARD'],
         'has_postcode': False,
         'volume_divisor': 250,
         'fuel_pct': 0.27,
@@ -65,7 +65,7 @@ CARRIER_DEFAULTS = {
     },
     'DHL-ROS': {
         'label': 'DHL',
-        'services': ['STANDARD'],
+        'services': ['EUROPLUS'],
         'has_postcode': False,
         'volume_divisor': 250,
         'fuel_pct': 0.27,
@@ -133,6 +133,11 @@ UPDE_7R9W62_SERVICE = 'SAVER'
 CARRIER_DEFAULTS['UPSDE SINGLE'] = {**CARRIER_DEFAULTS['UPDE'],
                                     'label': 'UPS DE 7R9W62', 'services': ['SAVER']}
 SELECTABLE_CARRIERS = [c for c in CARRIER_DEFAULTS if c not in CARRIER_ALIASES]
+
+# Service codes CargoWrite books these carriers under.
+DHL_ROS_SERVICE = 'EUROPLUS'
+DPD_SERVICE = 'STANDARD'
+UPSNL_SERVICE = 'SAVER'
 
 # UPS express services (UPDE / UPSNL / UPSGB EXPRESS SAVER, the 7R9W62 'SAVER'
 # account) have their own fuel surcharge: 'express_fuel_pct' of the carrier,
@@ -1101,7 +1106,7 @@ def build_rows_dhl(rate_data, country_cfg):
         if first is not None:
             for mp in range(1, max_p + 1):
                 total = first + (mp - 1) * after
-                rows.append({**c0, 'SERVICE_LEVEL': 'STANDARD',
+                rows.append({**c0, 'SERVICE_LEVEL': DHL_ROS_SERVICE,
                              'MAX_PARCEL': mp, 'EACH_WEIGHT': max_ew,
                              'RATE_BASE': round(total, 4)})
         return rows
@@ -1109,7 +1114,7 @@ def build_rows_dhl(rate_data, country_cfg):
     # DHL "Other countries" is a TOTAL-payweight table (one lookup per shipment),
     # not a per-parcel table — use the full bands (no max_ew cap) and price once.
     bands = collapse_same_rate_tiers(rate_data.get('STANDARD', []))
-    rows += build_combined_weight_rows(c0, bands, max_p, 'STANDARD', max_ew=max_ew)
+    rows += build_combined_weight_rows(c0, bands, max_p, DHL_ROS_SERVICE, max_ew=max_ew)
     return rows
 
 
@@ -1120,11 +1125,11 @@ def build_rows_dpd(rate_data, country_cfg):
                     'DPD', country_cfg['iso2'])
     for mp in range(1, max_p + 1):
         if 'klein' in rate_data:
-            rows.append({**c0, 'SERVICE_LEVEL': 'PARCEL', 'MAX_PARCEL': mp,
+            rows.append({**c0, 'SERVICE_LEVEL': DPD_SERVICE, 'MAX_PARCEL': mp,
                          'EACH_WEIGHT': 3.0,
                          'RATE_BASE': round(rate_data['klein'] * mp, 4)})
         if 'groot' in rate_data:
-            rows.append({**c0, 'SERVICE_LEVEL': 'PARCEL', 'MAX_PARCEL': mp,
+            rows.append({**c0, 'SERVICE_LEVEL': DPD_SERVICE, 'MAX_PARCEL': mp,
                          'EACH_WEIGHT': 31.5,
                          'RATE_BASE': round(rate_data['groot'] * mp, 4)})
     return rows
@@ -1184,7 +1189,7 @@ def build_rows_upsnl(rate_data, country_cfg):
         # UPSNL has no per-parcel linehaul / minimum, so the price depends on the
         # total weight only: one row per band covers every parcel count.
         return build_combined_weight_rows(
-            c0, bands_by_zone.get(zone, []), max_p, 'EXPRESS SAVER',
+            c0, bands_by_zone.get(zone, []), max_p, UPSNL_SERVICE,
             max_ew=max_ew, postcode=pc, collapse_parcels=True,
             over_steps=UPSNL_OVER_STEPS)
 
@@ -1759,10 +1764,9 @@ def _recompute_total(df):
     return df
 
 
-# Small-parcel tariffs with their own size limit: DPD small (<= 3 kg) is
-# limited to 140 cm (longest side + 2x the two shorter sides); USER_DEF_NUM_1
-# only holds one length, so 1.4 m instead of DPD's 1.75 m.
-SMALL_TARIFF_SIZE = {'DPD': (3.0, 1.4)}
+# Small-parcel tariffs with their own size limit {carrier: (max kg, max m)}.
+# Empty: DPD small used to get 1.4 m, now DPD has 1.75 m for every parcel.
+SMALL_TARIFF_SIZE = {}
 # Column of the size limit (max length, m): USER_DEF_NUM_1, CargoWrite's
 # numeric field (USER_DEF_TYPE_1 is text). USER_DEF_TYPE_1 is still accepted
 # for rules written for the old layout.
@@ -2446,12 +2450,12 @@ USER_DEF_TYPE_1_CARRIER_EXCEPTIONS = {
 # parcel carrier normally chosen there (never express), and one UPSNL row per
 # island postcode (COUNTRY_EXCLUSIVE_POSTCODES -> UPSNL). Yellow, at the top.
 PRIO_CARRIER = {
-    **{iso: ('DPD', 'PARCEL', 31.5) for iso in (
+    **{iso: ('DPD', DPD_SERVICE, 31.5) for iso in (
         'AT', 'BE', 'ES', 'EE', 'FR', 'HR', 'HU', 'IE', 'IT', 'LT', 'LU', 'LV',
         'NL', 'PL', 'PT', 'SK', 'SI')},
     **{iso: ('UPDE', 'STANDARD', 70.0) for iso in (
         'DE', 'DK', 'FI', 'SE', 'RO', 'BG', 'CZ', 'GR', 'LI')},
-    **{iso: ('UPSNL', 'EXPRESS SAVER', 70.0) for iso in ('CY', 'MT', 'SM')},
+    **{iso: ('UPSNL', UPSNL_SERVICE, 70.0) for iso in ('CY', 'MT', 'SM')},
     'GB': ('UPSGB', 'STANDARD', 70.0),
     'CH': ('UPSWEA', 'WORLD SHIP', 31.5),
     'NO': ('UPSWEA', 'WORLD SHIP', 31.5),
@@ -2469,7 +2473,7 @@ def append_prio_rows(df, country):
     client = df['CLIENT_ID'].dropna().iloc[0] if df['CLIENT_ID'].notna().any() else 'NLFENDER'
     islands = [pc for pc, car in COUNTRY_EXCLUSIVE_POSTCODES.get(iso, {}).items()
                if car == 'UPSNL']
-    rows = [(pc, ('UPSNL', 'EXPRESS SAVER', 70.0)) for pc in islands]
+    rows = [(pc, ('UPSNL', UPSNL_SERVICE, 70.0)) for pc in islands]
     rows.append((None, PRIO_CARRIER[iso]))
     out = []
     for pc, (car, svc, each) in rows:
@@ -2596,6 +2600,8 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
         if not df.empty:
             keep = (df['SERVICE_LEVEL'].astype(str).str.contains(
                         'EXPRESS SAVER', case=False, na=False)
+                    | ((df['CARRIER_ID'] == 'UPSNL')
+                       & (df['SERVICE_LEVEL'] == UPSNL_SERVICE))
                     | (df['CARRIER_ID'] == UPDE_7R9W62_CARRIER))   # 7R9W62 = express
             df = df[keep].copy().reset_index(drop=True)
             log.info('express-only filter: %d express rows kept', len(df))
